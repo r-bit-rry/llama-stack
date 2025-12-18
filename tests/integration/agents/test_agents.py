@@ -11,7 +11,8 @@ import pytest
 from llama_stack_client import AgentEventLogger
 from llama_stack_client.lib.agents.agent import Agent
 from llama_stack_client.lib.agents.turn_events import StepCompleted
-from llama_stack_client.types.shared_params.agent_config import AgentConfig, ToolConfig
+from llama_stack_client.models.agent_config import AgentConfig
+from llama_stack_client.models.tool_config import ToolConfig
 
 from llama_stack.apis.agents.agents import (
     AgentConfig as Server__AgentConfig,
@@ -143,46 +144,43 @@ def test_tool_config(agent_config):
         toolgroups=[],
         enable_session_persistence=False,
     )
-    agent_config = AgentConfig(
-        **common_params,
-    )
-    Server__AgentConfig(**common_params)
+    agent_config = AgentConfig.from_dict(common_params)
 
-    agent_config = AgentConfig(
+    agent_config = AgentConfig.from_dict({
         **common_params,
-        tool_choice="auto",
-    )
-    server_config = Server__AgentConfig(**agent_config)
+        "tool_choice": "auto",
+    })
+    server_config = Server__AgentConfig(**agent_config.to_dict())
     assert server_config.tool_config.tool_choice == ToolChoice.auto
 
-    agent_config = AgentConfig(
+    agent_config = AgentConfig.from_dict({
         **common_params,
-        tool_choice="auto",
-        tool_config=ToolConfig(
-            tool_choice="auto",
-        ),
-    )
-    server_config = Server__AgentConfig(**agent_config)
+        "tool_choice": "auto",
+        "tool_config": {
+            "tool_choice": "auto",
+        }
+    })
+    server_config = Server__AgentConfig(**agent_config.to_dict())
     assert server_config.tool_config.tool_choice == ToolChoice.auto
 
-    agent_config = AgentConfig(
+    agent_config = AgentConfig.from_dict({
         **common_params,
-        tool_config=ToolConfig(
-            tool_choice="required",
-        ),
-    )
-    server_config = Server__AgentConfig(**agent_config)
+        "tool_config": {
+            "tool_choice": "required",
+        }
+    })
+    server_config = Server__AgentConfig(**agent_config.to_dict())
     assert server_config.tool_config.tool_choice == ToolChoice.required
 
-    agent_config = AgentConfig(
+    agent_config = AgentConfig.from_dict({
         **common_params,
-        tool_choice="required",
-        tool_config=ToolConfig(
-            tool_choice="auto",
-        ),
-    )
+        "tool_choice": "required",
+        "tool_config": {
+            "tool_choice": "auto",
+        }
+    })
     with pytest.raises(ValueError, match="tool_choice is deprecated"):
-        Server__AgentConfig(**agent_config)
+        Server__AgentConfig(**agent_config.to_dict())
 
 
 def test_builtin_tool_web_search(llama_stack_client, agent_config):

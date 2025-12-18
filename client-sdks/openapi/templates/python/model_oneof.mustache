@@ -1,14 +1,15 @@
 from __future__ import annotations
 import json
 import pprint
+import re
 {{#vendorExtensions.x-py-other-imports}}
 {{{.}}}
 {{/vendorExtensions.x-py-other-imports}}
 {{#vendorExtensions.x-py-model-imports}}
 {{{.}}}
 {{/vendorExtensions.x-py-model-imports}}
-from pydantic import StrictStr, Field
-from typing import Union, List, Set, Optional, Dict
+from pydantic import StrictStr, Field, model_serializer
+from typing import Union, List, Set, Optional, Dict, ClassVar
 from typing_extensions import Literal, Self
 
 {{#lambda.uppercase}}{{{classname}}}{{/lambda.uppercase}}_ONE_OF_SCHEMAS = [{{#oneOf}}"{{.}}"{{^-last}}, {{/-last}}{{/oneOf}}]
@@ -22,7 +23,7 @@ class {{classname}}({{#parent}}{{{.}}}{{/parent}}{{^parent}}BaseModel{{/parent}}
     {{vendorExtensions.x-py-name}}: {{{vendorExtensions.x-py-typing}}}
 {{/composedSchemas.oneOf}}
     actual_instance: Optional[Union[{{#oneOf}}{{{.}}}{{^-last}}, {{/-last}}{{/oneOf}}]] = None
-    one_of_schemas: Set[str] = { {{#oneOf}}"{{.}}"{{^-last}}, {{/-last}}{{/oneOf}} }
+    one_of_schemas: ClassVar[Set[str]] = { {{#oneOf}}"{{.}}"{{^-last}}, {{/-last}}{{/oneOf}} }
 
     model_config = ConfigDict(
         validate_assignment=True,
@@ -31,10 +32,10 @@ class {{classname}}({{#parent}}{{{.}}}{{/parent}}{{^parent}}BaseModel{{/parent}}
 
 {{#discriminator}}
 
-    discriminator_value_class_map: Dict[str, str] = {
-{{#children}}
-        '{{^vendorExtensions.x-discriminator-value}}{{name}}{{/vendorExtensions.x-discriminator-value}}{{#vendorExtensions.x-discriminator-value}}{{{vendorExtensions.x-discriminator-value}}}{{/vendorExtensions.x-discriminator-value}}': '{{{classname}}}'{{^-last}},{{/-last}}
-{{/children}}
+    discriminator_value_class_map: ClassVar[Dict[str, str]] = {
+{{#mappedModels}}
+        '{{{mappingName}}}': '{{{modelName}}}'{{^-last}},{{/-last}}
+{{/mappedModels}}
     }
 {{/discriminator}}
 
@@ -44,9 +45,120 @@ class {{classname}}({{#parent}}{{{.}}}{{/parent}}{{^parent}}BaseModel{{/parent}}
                 raise ValueError("If a position argument is used, only 1 is allowed to set `actual_instance`")
             if kwargs:
                 raise ValueError("If a position argument is used, keyword arguments cannot be used.")
-            super().__init__(actual_instance=args[0])
+
+            # Preprocess the value to handle lists of dicts
+            value = args[0]
+            if isinstance(value, list):
+                # Try to construct model instances from dicts in the list
+                # This ensures default values are applied
+                from pydantic import ValidationError as PydanticValidationError
+                validated = None
+                {{#composedSchemas.oneOf}}
+                {{#isContainer}}
+                if validated is None:
+                    try:
+                        # Import the item type for this oneOf variant
+                        from pydantic import TypeAdapter
+                        adapter = TypeAdapter({{{dataType}}})
+                        validated = adapter.validate_python(value)
+                    except (PydanticValidationError, ValueError, ImportError):
+                        pass  # Try next variant
+                {{/isContainer}}
+                {{/composedSchemas.oneOf}}
+                if validated is not None:
+                    value = validated
+
+            super().__init__(actual_instance=value)
         else:
             super().__init__(**kwargs)
+
+    def __getattr__(self, name: str):
+        """Proxy attribute access to actual_instance for transparency."""
+        # Avoid infinite recursion for private attributes and model fields
+        if name.startswith('_') or name in ('actual_instance', 'one_of_schemas', 'model_config', 'model_fields'):
+            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+
+        actual = super().__getattribute__('actual_instance')
+        if actual is None:
+            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}' (actual_instance is None)")
+
+        return getattr(actual, name)
+
+    def __iter__(self):
+        """Iterate over items if actual_instance is iterable."""
+        if hasattr(self.actual_instance, '__iter__'):
+            return iter(self.actual_instance)
+        raise TypeError(f"'{type(self.actual_instance).__name__}' object is not iterable")
+
+    def __getitem__(self, index):
+        """Get item by index if actual_instance supports indexing."""
+        if hasattr(self.actual_instance, '__getitem__'):
+            return self.actual_instance[index]
+        raise TypeError(f"'{type(self.actual_instance).__name__}' object is not subscriptable")
+
+    def __len__(self):
+        """Get length if actual_instance supports len()."""
+        if hasattr(self.actual_instance, '__len__'):
+            return len(self.actual_instance)
+        raise TypeError(f"object of type '{type(self.actual_instance).__name__}' has no len()")
+
+    def __bool__(self):
+        """Handle truthiness checks - wrapper is truthy if actual_instance is not None."""
+        return self.actual_instance is not None
+
+    def __eq__(self, other):
+        """Handle equality comparisons transparently."""
+        if hasattr(self, 'actual_instance') and self.actual_instance is not None:
+            return self.actual_instance == other
+        return super().__eq__(other)
+
+    def __hash__(self):
+        """Handle hashing - use actual_instance's hash if available."""
+        if hasattr(self, 'actual_instance') and self.actual_instance is not None:
+            return hash(self.actual_instance)
+        return super().__hash__()
+
+    def __repr__(self):
+        """Return repr of actual_instance for debugging."""
+        if hasattr(self, 'actual_instance') and self.actual_instance is not None:
+            return repr(self.actual_instance)
+        return super().__repr__()
+
+    @model_serializer(mode='wrap')
+    def serialize_model(self, serializer):
+        """Custom serializer that delegates to actual_instance for proper JSON serialization."""
+        # If actual_instance is None, serialize the wrapper normally
+        if not hasattr(self, 'actual_instance') or self.actual_instance is None:
+            return serializer(self)
+
+        # If actual_instance is a Pydantic model, serialize it using the default serializer
+        # This ensures nested models are also serialized correctly
+        if hasattr(self.actual_instance, '__pydantic_serializer__'):
+            # Use Pydantic's serializer infrastructure to ensure proper serialization
+            from pydantic_core import to_jsonable_python
+            return to_jsonable_python(
+                self.actual_instance,
+                by_alias=True,
+                exclude_none=True,
+                fallback=lambda x: x if isinstance(x, (str, int, float, bool, type(None))) else str(x)
+            )
+        # If it's a list of Pydantic models, serialize each one
+        elif isinstance(self.actual_instance, list):
+            from pydantic_core import to_jsonable_python
+            return [
+                to_jsonable_python(
+                    item,
+                    by_alias=True,
+                    exclude_none=True,
+                    fallback=lambda x: x if isinstance(x, (str, int, float, bool, type(None))) else str(x)
+                )
+                if hasattr(item, '__pydantic_serializer__')
+                else item
+                for item in self.actual_instance
+            ]
+        # Otherwise return as-is (primitives, dicts, etc.)
+        else:
+            return self.actual_instance
 
     @field_validator('actual_instance')
     def actual_instance_must_validate_oneof(cls, v):
@@ -61,11 +173,78 @@ class {{classname}}({{#parent}}{{{.}}}{{/parent}}{{^parent}}BaseModel{{/parent}}
         {{#composedSchemas.oneOf}}
         # validate data type: {{{dataType}}}
         {{#isContainer}}
-        try:
-            instance.{{vendorExtensions.x-py-name}} = v
-            match += 1
-        except (ValidationError, ValueError) as e:
-            error_messages.append(str(e))
+        # Check if this list schema should be skipped based on discriminator
+        should_skip = False
+        if isinstance(v, list) and len(v) > 0:
+            # Extract the item type from the dataType (e.g., "List[Foo]" -> "Foo")
+
+            type_str = "{{{dataType}}}"
+            match_result = re.match(r'List\[(.+)\]', type_str)
+            if match_result:
+                item_type_name = match_result.group(1)
+                # Check if items have a 'type' field (common discriminator)
+                first_item = v[0]
+                if isinstance(first_item, dict) and 'type' in first_item:
+                    discriminator_value = first_item['type']
+                    # Try to get the discriminator map from the item type
+                    try:
+                        import importlib
+                        # Convert PascalCase to snake_case
+                        module_name = re.sub('([A-Z]+)([A-Z][a-z])', r'\1_\2', item_type_name)
+                        module_name = re.sub('([a-z0-9])([A-Z])', r'\1_\2', module_name).lower()
+                        item_module = importlib.import_module('{{packageName}}.models.' + module_name)
+                        item_class = getattr(item_module, item_type_name)
+                        if hasattr(item_class, 'discriminator_value_class_map'):
+                            # Check if the discriminator value is in this class's map
+                            if discriminator_value not in item_class.discriminator_value_class_map:
+                                # This discriminator doesn't belong to this schema variant
+                                should_skip = True
+                    except (ImportError, AttributeError):
+                        # No discriminator map found, proceed with normal validation
+                        pass
+
+        if should_skip:
+            error_messages.append(f"Discriminator value mismatch for {{{dataType}}}")
+        else:
+            try:
+                # For lists, we need to validate each item and potentially construct models from dicts
+                # This ensures default values are applied when users pass plain dicts
+                if isinstance(v, list):
+                    # Extract the item type from the dataType (e.g., "List[Foo]" -> "Foo")
+                    type_str = "{{{dataType}}}"
+                    match_result = re.match(r'List\[(.+)\]', type_str)
+                    if match_result:
+                        item_type_name = match_result.group(1)
+                        # Check if item_type_name is a primitive type (object, str, int, etc.)
+                        # These don't have corresponding model classes to import
+                        primitive_types = {'object', 'str', 'int', 'float', 'bool', 'Any'}
+                        if item_type_name in primitive_types:
+                            # For primitives, just use the list as-is
+                            instance.{{vendorExtensions.x-py-name}} = v
+                        else:
+                            # Manually construct each item using from_dict to ensure actual_instance is set
+                            validated_items = []
+                            for item in v:
+                                if isinstance(item, dict):
+                                    # Import the item class and use from_dict
+                                    import importlib
+                                    module_name = re.sub('([A-Z]+)([A-Z][a-z])', r'\1_\2', item_type_name)
+                                    module_name = re.sub('([a-z0-9])([A-Z])', r'\1_\2', module_name).lower()
+                                    item_module = importlib.import_module('{{packageName}}.models.' + module_name)
+                                    item_class = getattr(item_module, item_type_name)
+                                    validated_items.append(item_class.from_dict(item))
+                                else:
+                                    # Already a model instance
+                                    validated_items.append(item)
+                            # Return the validated list directly to avoid re-triggering validation
+                            return validated_items
+                    else:
+                        instance.{{vendorExtensions.x-py-name}} = v
+                else:
+                    instance.{{vendorExtensions.x-py-name}} = v
+                match += 1
+            except (ValidationError, ValueError) as e:
+                error_messages.append(str(e))
         {{/isContainer}}
         {{^isContainer}}
         {{#isPrimitiveType}}
@@ -76,14 +255,40 @@ class {{classname}}({{#parent}}{{{.}}}{{/parent}}{{^parent}}BaseModel{{/parent}}
             error_messages.append(str(e))
         {{/isPrimitiveType}}
         {{^isPrimitiveType}}
-        if not isinstance(v, {{{dataType}}}):
-            error_messages.append(f"Error! Input type `{type(v)}` is not `{{{dataType}}}`")
+        # Check if we should skip this variant based on discriminator
+        _should_skip_discriminator = False
+        if isinstance(v, dict) and hasattr(cls, 'discriminator_value_class_map'):
+            _disc_value = v.get('type')  # Assuming 'type' is the discriminator field
+            if _disc_value and _disc_value in cls.discriminator_value_class_map:
+                _expected_class = cls.discriminator_value_class_map[_disc_value]
+                if _expected_class != '{{{dataType}}}':
+                    _should_skip_discriminator = True
+
+        if _should_skip_discriminator:
+            error_messages.append(f"Skipping {{{dataType}}} due to discriminator mismatch")
+        elif not isinstance(v, {{{dataType}}}):
+            # Try to construct from dict if it's a dict - this applies default values
+            if isinstance(v, dict):
+                try:
+                    constructed = {{{dataType}}}.model_validate(v)
+                    match += 1
+                    # Return the constructed instance to use it instead of raw dict
+                    return constructed
+                except (ValidationError, ValueError) as e:
+                    error_messages.append(f"Error! Cannot construct `{{{dataType}}}` from dict: {str(e)}")
+            else:
+                error_messages.append(f"Error! Input type `{type(v)}` is not `{{{dataType}}}`")
         else:
             match += 1
         {{/isPrimitiveType}}
         {{/isContainer}}
         {{/composedSchemas.oneOf}}
         if match > 1:
+            # Special case: empty lists can match multiple List[...] schemas in oneOf
+            # This is common in streaming where content starts empty
+            # In this case, just accept the first match (they're functionally equivalent for empty lists)
+            if isinstance(v, list) and len(v) == 0:
+                return v
             # more than 1 match
             raise ValueError("Multiple matches found when setting `actual_instance` in {{{classname}}} with oneOf schemas: {{#oneOf}}{{{.}}}{{^-last}}, {{/-last}}{{/oneOf}}. Details: " + ", ".join(error_messages))
         elif match == 0:
@@ -94,6 +299,12 @@ class {{classname}}({{#parent}}{{{.}}}{{/parent}}{{^parent}}BaseModel{{/parent}}
 
     @classmethod
     def from_dict(cls, obj: Union[str, Dict[str, Any]]) -> Self:
+        # Handle primitives and lists directly - don't double-serialize them
+        if isinstance(obj, (str, int, float, bool, type(None), list)):
+            # For non-dict content, bypass from_json and use actual_instance_must_validate_oneof
+            instance = cls.model_construct()
+            instance.actual_instance = cls.actual_instance_must_validate_oneof(obj)
+            return instance
         return cls.from_json(json.dumps(obj))
 
     @classmethod
@@ -134,14 +345,67 @@ class {{classname}}({{#parent}}{{{.}}}{{/parent}}{{^parent}}BaseModel{{/parent}}
         {{#composedSchemas.oneOf}}
         {{#isContainer}}
         # deserialize data into {{{dataType}}}
-        try:
-            # validation
-            instance.{{vendorExtensions.x-py-name}} = json.loads(json_str)
-            # assign value to actual_instance
-            instance.actual_instance = instance.{{vendorExtensions.x-py-name}}
-            match += 1
-        except (ValidationError, ValueError) as e:
-            error_messages.append(str(e))
+        # Check if this list schema should be skipped based on discriminator
+        _should_skip = False
+        _data = json.loads(json_str)
+        if isinstance(_data, list) and len(_data) > 0:
+            # Extract the item type from the dataType (e.g., "List[Foo]" -> "Foo")
+            _type_str = "{{{dataType}}}"
+            _match_result = re.match(r'List\[(.+)\]', _type_str)
+            if _match_result:
+                _item_type_name = _match_result.group(1)
+                # Check if items have a 'type' field (common discriminator)
+                _first_item = _data[0]
+                if isinstance(_first_item, dict) and 'type' in _first_item:
+                    _discriminator_value = _first_item['type']
+                    # Try to get the discriminator map from the item type
+                    try:
+                        import importlib
+                        # Convert PascalCase to snake_case
+                        _module_name = re.sub('([A-Z]+)([A-Z][a-z])', r'\1_\2', _item_type_name)
+                        _module_name = re.sub('([a-z0-9])([A-Z])', r'\1_\2', _module_name).lower()
+                        _item_module = importlib.import_module('{{packageName}}.models.' + _module_name)
+                        _item_class = getattr(_item_module, _item_type_name)
+                        if hasattr(_item_class, 'discriminator_value_class_map'):
+                            _disc_map = _item_class.discriminator_value_class_map
+                            # Check if the discriminator value is in this class's map
+                            if _discriminator_value not in _disc_map:
+                                # This discriminator doesn't belong to this schema variant
+                                _should_skip = True
+                    except (ImportError, AttributeError):
+                        # No discriminator map found, proceed with normal validation
+                        pass
+
+        if _should_skip:
+            error_messages.append(f"Discriminator value mismatch for {{{dataType}}}")
+        else:
+            try:
+                # Extract the item type from the dataType (e.g., "List[Foo]" -> "Foo")
+                _type_str = "{{{dataType}}}"
+                _match_result = re.match(r'List\[(.+)\]', _type_str)
+                if _match_result and isinstance(_data, list):
+                    _item_type_name = _match_result.group(1)
+                    # Manually construct each item using from_dict to ensure actual_instance is set
+                    _validated_items = []
+                    for _item in _data:
+                        if isinstance(_item, dict):
+                            # Import the item class and use from_dict
+                            _module_name = re.sub('([A-Z]+)([A-Z][a-z])', r'\1_\2', _item_type_name)
+                            _module_name = re.sub('([a-z0-9])([A-Z])', r'\1_\2', _module_name).lower()
+                            _item_module = importlib.import_module('{{packageName}}.models.' + _module_name)
+                            _item_class = getattr(_item_module, _item_type_name)
+                            _validated_items.append(_item_class.from_dict(_item))
+                        else:
+                            # Already a model instance
+                            _validated_items.append(_item)
+                    instance.{{vendorExtensions.x-py-name}} = _validated_items
+                    instance.actual_instance = _validated_items
+                else:
+                    instance.{{vendorExtensions.x-py-name}} = _data
+                    instance.actual_instance = _data
+                match += 1
+            except (ValidationError, ValueError) as e:
+                error_messages.append(str(e))
         {{/isContainer}}
         {{^isContainer}}
         {{#isPrimitiveType}}
@@ -167,10 +431,55 @@ class {{classname}}({{#parent}}{{{.}}}{{/parent}}{{^parent}}BaseModel{{/parent}}
         {{/composedSchemas.oneOf}}
 
         if match > 1:
+            # Special case: empty lists can match multiple List[...] schemas in oneOf
+            # This is common in streaming where content starts empty
+            # In this case, just accept the first match (they're functionally equivalent for empty lists)
+            data = json.loads(json_str)
+            if isinstance(data, list) and len(data) == 0:
+                return instance  # First match already set in instance
             # more than 1 match
             raise ValueError("Multiple matches found when deserializing the JSON string into {{{classname}}} with oneOf schemas: {{#oneOf}}{{{.}}}{{^-last}}, {{/-last}}{{/oneOf}}. Details: " + ", ".join(error_messages))
         elif match == 0:
-            # no match
+            # no match - try lenient fallback for streaming chunks
+            data = json.loads(json_str)
+
+            # Helper to remove None values recursively for streaming chunks
+            def remove_none_values(obj):
+                if isinstance(obj, dict):
+                    return {k: remove_none_values(v) for k, v in obj.items() if v is not None}
+                elif isinstance(obj, list):
+                    return [remove_none_values(item) for item in obj if item is not None]
+                return obj
+
+            # Helper to add default values for commonly missing required fields in streaming
+            def add_streaming_defaults(obj):
+                if isinstance(obj, dict):
+                    result = dict(obj)
+                    # Add empty string for finish_reason if missing (common in streaming chunks)
+                    if 'choices' in result and isinstance(result['choices'], list):
+                        for choice in result['choices']:
+                            if isinstance(choice, dict) and 'finish_reason' not in choice:
+                                choice['finish_reason'] = ''
+                    return result
+                return obj
+
+            # Try each variant with None values removed and defaults added
+            {{#composedSchemas.oneOf}}
+            {{^isPrimitiveType}}
+            {{^isContainer}}
+            try:
+                cleaned_data = remove_none_values(data)
+                cleaned_data = add_streaming_defaults(cleaned_data)
+                variant = {{{dataType}}}.model_validate(cleaned_data)
+                instance.actual_instance = variant
+                return instance
+            except Exception:
+                pass
+            {{/isContainer}}
+            {{/isPrimitiveType}}
+            {{/composedSchemas.oneOf}}
+
+            # All variants failed
             raise ValueError("No match found when deserializing the JSON string into {{{classname}}} with oneOf schemas: {{#oneOf}}{{{.}}}{{^-last}}, {{/-last}}{{/oneOf}}. Details: " + ", ".join(error_messages))
         else:
             return instance
@@ -190,8 +499,25 @@ class {{classname}}({{#parent}}{{{.}}}{{/parent}}{{^parent}}BaseModel{{/parent}}
         if self.actual_instance is None:
             return None
 
-        if hasattr(self.actual_instance, "to_dict") and callable(self.actual_instance.to_dict):
+        # Handle lists specially - call to_dict() on each item if it has the method
+        if isinstance(self.actual_instance, list):
+            return [
+                item.to_dict() if hasattr(item, 'to_dict') and callable(item.to_dict)
+                else item
+                for item in self.actual_instance
+            ]
+        # Handle Pydantic models
+        elif hasattr(self.actual_instance, "to_dict") and callable(self.actual_instance.to_dict):
             return self.actual_instance.to_dict()
+        # Handle other Pydantic models that don't have to_dict
+        elif hasattr(self.actual_instance, '__pydantic_serializer__'):
+            from pydantic_core import to_jsonable_python
+            return to_jsonable_python(
+                self.actual_instance,
+                by_alias=True,
+                exclude_none=True,
+                fallback=lambda x: x if isinstance(x, (str, int, float, bool, type(None))) else str(x)
+            )
         else:
             # primitive type
             return self.actual_instance

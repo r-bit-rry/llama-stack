@@ -5,6 +5,7 @@
 
 import io
 import json
+import logging
 import re
 import ssl
 from typing import Optional, Union
@@ -12,6 +13,8 @@ from typing import Optional, Union
 import httpx
 
 from {{packageName}}.exceptions import ApiException, ApiValueError
+
+logger = logging.getLogger(__name__)
 
 RESTResponseType = httpx.Response
 
@@ -60,6 +63,9 @@ class RESTClientObject:
         self.proxy = configuration.proxy
         self.proxy_headers = configuration.proxy_headers
 
+        # Store default timeout from configuration
+        self.default_timeout = configuration.timeout if configuration.timeout is not None else 5 * 60
+
         self.pool_manager: Optional[httpx.AsyncClient] = None
 
     async def close(self):
@@ -106,7 +112,7 @@ class RESTClientObject:
 
         post_params = post_params or {}
         headers = headers or {}
-        timeout = _request_timeout or 5 * 60
+        timeout = _request_timeout if _request_timeout is not None else self.default_timeout
 
         if 'Content-Type' not in headers:
             headers['Content-Type'] = 'application/json'
@@ -163,6 +169,21 @@ class RESTClientObject:
 
         if self.pool_manager is None:
             self.pool_manager = self._create_pool_manager()
+
+        # Call _prepare_request hook if parent client has it
+        if hasattr(self, '_parent_client') and self._parent_client is not None:
+            # Build httpx.Request to pass to hook
+            request = self.pool_manager.build_request(**args)
+
+
+            # Call the hook (it's synchronous)
+            if hasattr(self._parent_client, '_prepare_request'):
+                self._parent_client._prepare_request(request)
+
+
+            # Extract potentially modified headers back
+            args['headers'] = dict(request.headers)
+
 
         r = await self.pool_manager.request(**args)
         return RESTResponse(r)

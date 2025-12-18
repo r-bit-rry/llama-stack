@@ -467,7 +467,7 @@ class AsyncLlamaStackAsLibraryClient(AsyncLlamaStackClient):
             status_code=httpx.codes.OK,
             content=wrapped_gen,
             headers={
-                "Content-Type": "application/json",
+                "Content-Type": "text/event-stream",
             },
             request=httpx.Request(
                 method=options.method,

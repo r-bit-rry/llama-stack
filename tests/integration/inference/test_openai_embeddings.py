@@ -30,6 +30,13 @@ def decode_base64_to_floats(base64_string: str) -> list[float]:
     return list(embedding_floats)
 
 
+def unwrap_embedding(embedding):
+    """Helper to unwrap OpenAIEmeddingDataEmbedding wrapper if present."""
+    if hasattr(embedding, "actual_instance"):
+        return embedding.actual_instance
+    return embedding
+
+
 def provider_from_model(client_with_models, model_id):
     models = {m.identifier: m for m in client_with_models.models.list()}
     models.update({m.provider_resource_id: m for m in client_with_models.models.list()})
@@ -165,9 +172,10 @@ def test_openai_embeddings_single_string(compat_client, client_with_models, embe
     assert len(response.data) == 1
     assert response.data[0].object == "embedding"
     assert response.data[0].index == 0
-    assert isinstance(response.data[0].embedding, list)
-    assert len(response.data[0].embedding) > 0
-    assert all(isinstance(x, float) for x in response.data[0].embedding)
+    first_embedding = unwrap_embedding(response.data[0].embedding)
+    assert isinstance(first_embedding, list)
+    assert len(first_embedding) > 0
+    assert all(isinstance(x, float) for x in first_embedding)
 
 
 def test_openai_embeddings_multiple_strings(compat_client, client_with_models, embedding_model_id):
@@ -191,9 +199,10 @@ def test_openai_embeddings_multiple_strings(compat_client, client_with_models, e
     for i, embedding_data in enumerate(response.data):
         assert embedding_data.object == "embedding"
         assert embedding_data.index == i
-        assert isinstance(embedding_data.embedding, list)
-        assert len(embedding_data.embedding) > 0
-        assert all(isinstance(x, float) for x in embedding_data.embedding)
+        embedding = unwrap_embedding(embedding_data.embedding)
+        assert isinstance(embedding, list)
+        assert len(embedding) > 0
+        assert all(isinstance(x, float) for x in embedding)
 
 
 def test_openai_embeddings_with_encoding_format_float(compat_client, client_with_models, embedding_model_id):
@@ -211,8 +220,9 @@ def test_openai_embeddings_with_encoding_format_float(compat_client, client_with
 
     assert response.object == "list"
     assert len(response.data) == 1
-    assert isinstance(response.data[0].embedding, list)
-    assert all(isinstance(x, float) for x in response.data[0].embedding)
+    embedding = unwrap_embedding(response.data[0].embedding)
+    assert isinstance(embedding, list)
+    assert all(isinstance(x, float) for x in embedding)
 
 
 def test_openai_embeddings_with_dimensions(compat_client, client_with_models, embedding_model_id):
@@ -233,8 +243,9 @@ def test_openai_embeddings_with_dimensions(compat_client, client_with_models, em
     assert response.object == "list"
     assert len(response.data) == 1
     # Note: Not all models support custom dimensions, so we don't assert the exact dimension
-    assert isinstance(response.data[0].embedding, list)
-    assert len(response.data[0].embedding) > 0
+    embedding = unwrap_embedding(response.data[0].embedding)
+    assert isinstance(embedding, list)
+    assert len(embedding) > 0
 
 
 def test_openai_embeddings_with_user_parameter(compat_client, client_with_models, embedding_model_id):
@@ -254,8 +265,9 @@ def test_openai_embeddings_with_user_parameter(compat_client, client_with_models
 
     assert response.object == "list"
     assert len(response.data) == 1
-    assert isinstance(response.data[0].embedding, list)
-    assert len(response.data[0].embedding) > 0
+    embedding = unwrap_embedding(response.data[0].embedding)
+    assert isinstance(embedding, list)
+    assert len(embedding) > 0
 
 
 def test_openai_embeddings_empty_list_error(compat_client, client_with_models, embedding_model_id):
@@ -304,8 +316,8 @@ def test_openai_embeddings_different_inputs_different_outputs(compat_client, cli
         extra_body=extra_body,
     )
 
-    embedding1 = response1.data[0].embedding
-    embedding2 = response2.data[0].embedding
+    embedding1 = unwrap_embedding(response1.data[0].embedding)
+    embedding2 = unwrap_embedding(response2.data[0].embedding)
 
     assert len(embedding1) == len(embedding2)
     # Embeddings should be different for different inputs
@@ -337,10 +349,11 @@ def test_openai_embeddings_with_encoding_format_base64(compat_client, client_wit
     embedding_data = response.data[0]
     assert embedding_data.object == "embedding"
     assert embedding_data.index == 0
-    assert isinstance(embedding_data.embedding, str)
+    embedding = unwrap_embedding(embedding_data.embedding)
+    assert isinstance(embedding, str)
 
     # Verify it's valid base64 and decode to floats
-    embedding_floats = decode_base64_to_floats(embedding_data.embedding)
+    embedding_floats = decode_base64_to_floats(embedding)
 
     # Verify we got valid floats
     assert len(embedding_floats) == dimensions, f"Got embedding length {len(embedding_floats)}, expected {dimensions}"
@@ -373,8 +386,9 @@ def test_openai_embeddings_base64_batch_processing(compat_client, client_with_mo
         assert embedding_data.index == i
 
         # With base64 encoding, embedding should be a string, not a list
-        assert isinstance(embedding_data.embedding, str)
-        embedding_floats = decode_base64_to_floats(embedding_data.embedding)
+        embedding = unwrap_embedding(embedding_data.embedding)
+        assert isinstance(embedding, str)
+        embedding_floats = decode_base64_to_floats(embedding)
         assert len(embedding_floats) > 0
         assert all(isinstance(x, float) for x in embedding_floats)
         embedding_dimensions.append(len(embedding_floats))

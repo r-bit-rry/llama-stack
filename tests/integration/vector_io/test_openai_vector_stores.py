@@ -9,6 +9,7 @@ from io import BytesIO
 
 import pytest
 from llama_stack_client import BadRequestError
+from llama_stack_client.exceptions import BadRequestException
 from openai import BadRequestError as OpenAIBadRequestError
 
 from llama_stack.apis.vector_io import Chunk
@@ -110,9 +111,9 @@ def compat_client_with_empty_stores(compat_client):
             response = compat_client.vector_stores.list()
             for store in response.data:
                 compat_client.vector_stores.delete(vector_store_id=store.id)
-        except Exception:
+        except Exception as e:
             # If the API is not available or fails, just continue
-            logger.warning("Failed to clear vector stores")
+            logger.warning(f"Failed to clear vector stores: {e}")
             pass
 
     def clear_files():
@@ -120,9 +121,9 @@ def compat_client_with_empty_stores(compat_client):
             response = compat_client.files.list()
             for file in response.data:
                 compat_client.files.delete(file_id=file.id)
-        except Exception:
+        except Exception as e:
             # If the API is not available or fails, just continue
-            logger.warning("Failed to clear files")
+            logger.warning(f"Failed to clear files: {e}")
             pass
 
     clear_vector_stores()
@@ -838,7 +839,7 @@ def test_openai_vector_store_list_files_invalid_vector_store(
     if isinstance(compat_client, LlamaStackAsLibraryClient):
         errors = ValueError
     else:
-        errors = (BadRequestError, OpenAIBadRequestError)
+        errors = (BadRequestError, OpenAIBadRequestError, BadRequestException)
 
     with pytest.raises(errors):
         compat_client.vector_stores.files.list(vector_store_id="abc123")
@@ -1519,7 +1520,7 @@ def test_openai_vector_store_file_batch_error_handling(
     if isinstance(compat_client, LlamaStackAsLibraryClient):
         batch_errors = ValueError
     else:
-        batch_errors = (BadRequestError, OpenAIBadRequestError)
+        batch_errors = (BadRequestError, OpenAIBadRequestError, BadRequestException)
 
     with pytest.raises(batch_errors):  # Should raise an error for non-existent batch
         compat_client.vector_stores.file_batches.retrieve(
@@ -1531,7 +1532,7 @@ def test_openai_vector_store_file_batch_error_handling(
     if isinstance(compat_client, LlamaStackAsLibraryClient):
         vector_store_errors = ValueError
     else:
-        vector_store_errors = (BadRequestError, OpenAIBadRequestError)
+        vector_store_errors = (BadRequestError, OpenAIBadRequestError, BadRequestException)
 
     with pytest.raises(vector_store_errors):  # Should raise an error for non-existent vector store
         compat_client.vector_stores.file_batches.create(

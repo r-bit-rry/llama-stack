@@ -198,10 +198,19 @@ async def localize_image_content(uri: str) -> tuple[bytes, str] | None:
             r = await client.get(uri)
             content = r.content
             content_type = r.headers.get("content-type")
-            if content_type:
-                format = content_type.split("/")[-1]
-            else:
-                format = "png"
+
+            # Try to format from Content-Type header if it's a valid image type
+            format = None
+            if content_type and content_type.startswith("image/"):
+                format = content_type.split("/")[-1].split(";")[0] # Handle "image/jpeg;charset=utf-8
+
+            if not format:
+                try:
+                    pil_image = PIL_Image.open(io.BytesIO(content))
+                    format = pil_image.format.lower() if pil_image.format else "png"
+                except Exception:
+                    # If PIL can't detect it, default to png
+                    format = "png"
 
         return content, format
     elif uri.startswith("data"):

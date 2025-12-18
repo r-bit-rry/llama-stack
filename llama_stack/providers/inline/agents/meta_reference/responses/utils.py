@@ -232,13 +232,20 @@ async def convert_response_text_to_chat_response_format(
     """
     Convert an OpenAI Response text parameter into an OpenAI Chat Completion response format.
     """
-    if not text.format or text.format["type"] == "text":
+    # Convert format to dict to handle both TypedDict and Pydantic models
+    if isinstance(text.format, dict):
+        format_dict = text.format
+    else:
+        # Pydantic model - use model_dump with by_alias=True to get "schema" instead of "var_schema"
+        format_dict = text.format.model_dump(by_alias=True, exclude_none=True)
+    
+    if not text.format or format_dict.get("type") == "text":
         return OpenAIResponseFormatText(type="text")
-    if text.format["type"] == "json_object":
+    if format_dict.get("type") == "json_object":
         return OpenAIResponseFormatJSONObject()
-    if text.format["type"] == "json_schema":
+    if format_dict.get("type") == "json_schema":
         return OpenAIResponseFormatJSONSchema(
-            json_schema=OpenAIJSONSchema(name=text.format["name"], schema=text.format["schema"])
+            json_schema=OpenAIJSONSchema(name=format_dict["name"], schema=format_dict["schema"])
         )
     raise ValueError(f"Unsupported text format: {text.format}")
 

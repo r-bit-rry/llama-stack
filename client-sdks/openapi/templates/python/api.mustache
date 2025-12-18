@@ -3,6 +3,10 @@
 {{>partial_header}}
 
 import warnings
+import json
+import re
+import importlib
+import sys
 from pydantic import validate_call, Field, StrictFloat, StrictStr, StrictInt
 from typing import Any, Dict, List, Optional, Tuple, Union
 from typing_extensions import Annotated
@@ -14,6 +18,7 @@ from typing_extensions import Annotated
 from {{packageName}}.api_client import ApiClient, RequestSerialized
 from {{packageName}}.api_response import ApiResponse
 from {{packageName}}.rest import RESTResponseType
+from {{packageName}}.stream import Stream
 
 
 {{#operations}}
@@ -28,41 +33,216 @@ class {{classname}}:
         if api_client is None:
             api_client = ApiClient.get_default()
         self.api_client = api_client
+
+        # Child API attributes (set by LlamaStackClient based on x-nesting-path)
+{{#operation}}{{#vendorExtensions.x-nesting-path}}{{#-first}}{{#tags}}{{#-first}}{{#vendorExtensions.x-nesting-path}}{{^-last}}        self.{{.}}: Optional[Any] = None  # Next in nesting path
+{{/-last}}{{/vendorExtensions.x-nesting-path}}{{/-first}}{{/tags}}{{/-first}}{{/vendorExtensions.x-nesting-path}}{{/operation}}
 {{#operation}}
 
-
-    @validate_call
-    {{#async}}async {{/async}}def {{operationId}}{{>partial_api_args}} -> {{{returnType}}}{{^returnType}}None{{/returnType}}:
+{{! Skip Pydantic validation for multipart/form-data endpoints to allow file-like objects }}
+{{^hasFormParams}}    @validate_call
+{{/hasFormParams}}
+    {{#async}}async {{/async}}def {{#vendorExtensions.x-operation-name}}{{vendorExtensions.x-operation-name}}{{/vendorExtensions.x-operation-name}}{{^vendorExtensions.x-operation-name}}{{operationId}}{{/vendorExtensions.x-operation-name}}{{>partial_api_args}} -> {{#hasProduces}}{{#vendorExtensions.x-unwrap-list-response}}{{#returnType}}{{#returnContainer}}Union[{{{returnBaseType}}}, Stream[{{{returnBaseType}}}]]{{/returnContainer}}{{^returnContainer}}Union[{{{returnType}}}, Stream[{{{returnType}}}]]{{/returnContainer}}{{/returnType}}{{^returnType}}Union[None, Stream[None]]{{/returnType}}{{/vendorExtensions.x-unwrap-list-response}}{{^vendorExtensions.x-unwrap-list-response}}Union[{{{returnType}}}{{^returnType}}None{{/returnType}}, Stream[{{{returnType}}}{{^returnType}}None{{/returnType}}]]{{/vendorExtensions.x-unwrap-list-response}}{{/hasProduces}}{{^hasProduces}}{{{returnType}}}{{^returnType}}None{{/returnType}}{{/hasProduces}}:
 {{>partial_api}}
 
         response_data = {{#async}}await {{/async}}self.api_client.call_api(
             *_param,
             _request_timeout=_request_timeout
         )
+
+        # Check if this is a streaming response
+        content_type = response_data.response.headers.get('Content-Type', '')
+        if 'text/event-stream' in content_type:
+            # Get the response model type - for streaming, use the Stream variant
+            response_type_str = _response_types_map.get('200')
+            # Convert OpenAIResponseObject to OpenAIResponseObjectStream for streaming
+            if response_type_str and response_type_str.endswith('Object'):
+                stream_type_str = response_type_str + 'Stream'
+            else:
+                stream_type_str = response_type_str
+
+            # Create a decoder that uses ApiClient's deserializer
+            def stream_decoder(data_str: str) -> Any:
+                if not data_str:
+                    return None
+                try:
+                    data = json.loads(data_str)
+                    if stream_type_str:
+                        # Use discriminator to directly deserialize to the specific event type
+                        event_type = data.get('type')
+                        if event_type:
+                            # Map discriminator value to class name
+                            # e.g., "response.created" -> "OpenAIResponseObjectStreamResponseCreated"
+                            # Handle underscores: "response.output_item.added" -> "ResponseOutputItemAdded"
+                            type_parts = event_type.replace('_', '.').split('.')
+                            # Capitalize each part: response.created -> ResponseCreated
+                            class_suffix = ''.join(part.capitalize() for part in type_parts)
+                            # Get base type name from stream_type_str
+                            # e.g., OpenAIResponseObjectStream -> OpenAIResponseObjectStream
+                            specific_type_str = stream_type_str + class_suffix
+
+                            try:
+                                # Directly instantiate the model class without going through deserializer
+                                # This avoids oneOf validation issues
+                                # Convert PascalCase to snake_case properly
+                                # Handle sequences like "OpenAI" -> "open_ai"
+                                module_name = re.sub('([A-Z]+)([A-Z][a-z])', r'\1_\2', specific_type_str)
+                                module_name = re.sub('([a-z0-9])([A-Z])', r'\1_\2', module_name).lower()
+                                model_module = importlib.import_module('{{packageName}}.models.' + module_name)
+                                model_class = getattr(model_module, specific_type_str)
+                                # Use from_dict which properly handles nested oneOf models
+                                return model_class.from_dict(data)
+                            except Exception as e_specific:
+                                pass
+
+                        # Fall back to generic union deserialization
+                        try:
+                            deserialized = self.api_client._ApiClient__deserialize(data, stream_type_str)
+                            # Unwrap discriminated unions to return the actual instance
+                            if hasattr(deserialized, 'actual_instance') and deserialized.actual_instance is not None:
+                                return deserialized.actual_instance
+                            return deserialized
+                        except (ValueError, Exception) as e1:
+                            # Try lenient from_dict fallback for streaming chunks
+                            try:
+                                # Convert PascalCase to snake_case properly (same as above)
+                                module_name = re.sub('([A-Z]+)([A-Z][a-z])', r'\1_\2', stream_type_str)
+                                module_name = re.sub('([a-z0-9])([A-Z])', r'\1_\2', module_name).lower()
+                                model_module = importlib.import_module('{{packageName}}.models.' + module_name)
+                                model_class = getattr(model_module, stream_type_str)
+                                deserialized = model_class.from_dict(data)
+                                # Unwrap discriminated unions to return the actual instance
+                                if hasattr(deserialized, 'actual_instance') and deserialized.actual_instance is not None:
+                                    return deserialized.actual_instance
+                                return deserialized
+                            except (ValueError, Exception) as e2:
+                                # Streaming events may have different schemas than the response type
+                                # Return raw dict for events that don't match the expected schema
+                                return data
+                    return data
+                except json.JSONDecodeError:
+                    return data_str
+
+            # Return a Stream object for streaming responses
+            return Stream(
+                response=response_data.response,
+                client=self.api_client,
+                decoder=stream_decoder,
+            )
+
         {{#async}}await {{/async}}response_data.read()
-        return self.api_client.response_deserialize(
+        _deserialized = self.api_client.response_deserialize(
             response_data=response_data,
             response_types_map=_response_types_map,
         ).data
+        # Unwrap List*Response wrappers to return the data field directly
+        {{#vendorExtensions.x-unwrap-list-response}}
+        if _deserialized is not None and hasattr(_deserialized, 'data'):
+            return _deserialized.data
+        {{/vendorExtensions.x-unwrap-list-response}}
+        return _deserialized
 
-
-    @validate_call
-    {{#async}}async {{/async}}def {{operationId}}_with_http_info{{>partial_api_args}} -> ApiResponse[{{{returnType}}}{{^returnType}}None{{/returnType}}]:
+{{! Skip Pydantic validation for multipart/form-data endpoints }}
+{{^hasFormParams}}    @validate_call
+{{/hasFormParams}}
+    {{#async}}async {{/async}}def {{#vendorExtensions.x-operation-name}}{{vendorExtensions.x-operation-name}}{{/vendorExtensions.x-operation-name}}{{^vendorExtensions.x-operation-name}}{{operationId}}{{/vendorExtensions.x-operation-name}}_with_http_info{{>partial_api_args}} -> {{#hasProduces}}Union[ApiResponse[{{{returnType}}}{{^returnType}}None{{/returnType}}], Stream[{{{returnType}}}{{^returnType}}None{{/returnType}}]]{{/hasProduces}}{{^hasProduces}}ApiResponse[{{{returnType}}}{{^returnType}}None{{/returnType}}]{{/hasProduces}}:
 {{>partial_api}}
 
         response_data = {{#async}}await {{/async}}self.api_client.call_api(
             *_param,
             _request_timeout=_request_timeout
         )
+
+        # Check if this is a streaming response
+        content_type = response_data.response.headers.get('Content-Type', '')
+        if 'text/event-stream' in content_type:
+            # Get the response model type - for streaming, use the Stream variant
+            response_type_str = _response_types_map.get('200')
+            # Convert OpenAIResponseObject to OpenAIResponseObjectStream for streaming
+            if response_type_str and response_type_str.endswith('Object'):
+                stream_type_str = response_type_str + 'Stream'
+            else:
+                stream_type_str = response_type_str
+
+            # Create a decoder that uses ApiClient's deserializer
+            def stream_decoder(data_str: str) -> Any:
+                if not data_str:
+                    return None
+                try:
+                    data = json.loads(data_str)
+                    if stream_type_str:
+                        # Use discriminator to directly deserialize to the specific event type
+                        event_type = data.get('type')
+                        if event_type:
+                            # Map discriminator value to class name
+                            # e.g., "response.created" -> "OpenAIResponseObjectStreamResponseCreated"
+                            # Handle underscores: "response.output_item.added" -> "ResponseOutputItemAdded"
+                            type_parts = event_type.replace('_', '.').split('.')
+                            # Capitalize each part: response.created -> ResponseCreated
+                            class_suffix = ''.join(part.capitalize() for part in type_parts)
+                            # Get base type name from stream_type_str
+                            # e.g., OpenAIResponseObjectStream -> OpenAIResponseObjectStream
+                            specific_type_str = stream_type_str + class_suffix
+
+                            try:
+                                # Directly instantiate the model class without going through deserializer
+                                # This avoids oneOf validation issues
+                                # Convert PascalCase to snake_case properly
+                                # Handle sequences like "OpenAI" -> "open_ai"
+                                module_name = re.sub('([A-Z]+)([A-Z][a-z])', r'\1_\2', specific_type_str)
+                                module_name = re.sub('([a-z0-9])([A-Z])', r'\1_\2', module_name).lower()
+                                model_module = importlib.import_module('{{packageName}}.models.' + module_name)
+                                model_class = getattr(model_module, specific_type_str)
+                                # Use from_dict which properly handles nested oneOf models
+                                return model_class.from_dict(data)
+                            except Exception as e_specific:
+                                pass
+
+                        # Fall back to generic union deserialization
+                        try:
+                            deserialized = self.api_client._ApiClient__deserialize(data, stream_type_str)
+                            # Unwrap discriminated unions to return the actual instance
+                            if hasattr(deserialized, 'actual_instance') and deserialized.actual_instance is not None:
+                                return deserialized.actual_instance
+                            return deserialized
+                        except (ValueError, Exception) as e1:
+                            # Try lenient from_dict fallback
+                            try:
+                                # Convert PascalCase to snake_case properly (same as above)
+                                module_name = re.sub('([A-Z]+)([A-Z][a-z])', r'\1_\2', stream_type_str)
+                                module_name = re.sub('([a-z0-9])([A-Z])', r'\1_\2', module_name).lower()
+                                model_module = importlib.import_module('{{packageName}}.models.' + module_name)
+                                model_class = getattr(model_module, stream_type_str)
+                                deserialized = model_class.from_dict(data)
+                                # Unwrap discriminated unions to return the actual instance
+                                if hasattr(deserialized, 'actual_instance') and deserialized.actual_instance is not None:
+                                    return deserialized.actual_instance
+                                return deserialized
+                            except (ValueError, Exception) as e2:
+                                # Streaming events may have different schemas than the response type
+                                # Return raw dict for events that don't match the expected schema
+                                return data
+                    return data
+                except json.JSONDecodeError:
+                    return data_str
+
+            # Return a Stream object for streaming responses
+            return Stream(
+                response=response_data.response,
+                client=self.api_client,
+                decoder=stream_decoder,
+            )
+
         {{#async}}await {{/async}}response_data.read()
         return self.api_client.response_deserialize(
             response_data=response_data,
             response_types_map=_response_types_map,
         )
 
-
-    @validate_call
-    {{#async}}async {{/async}}def {{operationId}}_without_preload_content{{>partial_api_args}} -> RESTResponseType:
+{{! Skip Pydantic validation for multipart/form-data endpoints }}
+{{^hasFormParams}}    @validate_call
+{{/hasFormParams}}
+    {{#async}}async {{/async}}def {{#vendorExtensions.x-operation-name}}{{vendorExtensions.x-operation-name}}{{/vendorExtensions.x-operation-name}}{{^vendorExtensions.x-operation-name}}{{operationId}}{{/vendorExtensions.x-operation-name}}_without_preload_content{{>partial_api_args}} -> RESTResponseType:
 {{>partial_api}}
 
         response_data = {{#async}}await {{/async}}self.api_client.call_api(
@@ -72,7 +252,7 @@ class {{classname}}:
         return response_data.response
 
 
-    def _{{operationId}}_serialize(
+    def _{{#vendorExtensions.x-operation-name}}{{vendorExtensions.x-operation-name}}{{/vendorExtensions.x-operation-name}}{{^vendorExtensions.x-operation-name}}{{operationId}}{{/vendorExtensions.x-operation-name}}_serialize(
         self,
         {{#allParams}}
         {{paramName}},
