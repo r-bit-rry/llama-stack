@@ -652,7 +652,7 @@ class StreamingResponseOrchestrator:
         chat_response_tool_calls: dict[int, OpenAIChatCompletionToolCall] = {}
         chunk_created = 0
         chunk_model = ""
-        chunk_finish_reason = ""
+        chunk_finish_reason = "stop"
         chat_response_logprobs = []
 
         # Create a placeholder message item for delta events
