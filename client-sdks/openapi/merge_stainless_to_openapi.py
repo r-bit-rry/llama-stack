@@ -36,7 +36,7 @@ Patch file format:
 import argparse
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any
 
 try:
     import ruamel.yaml as yaml
@@ -45,7 +45,7 @@ except ImportError:
     sys.exit(1)
 
 
-def parse_endpoint(endpoint_str: str) -> Tuple[str, str]:
+def parse_endpoint(endpoint_str: str) -> tuple[str, str]:
     """
     Parse an endpoint string like 'post /v1/chat/completions' into (method, path).
 
@@ -63,7 +63,7 @@ def parse_endpoint(endpoint_str: str) -> Tuple[str, str]:
         return None, parts[0]
 
 
-def extract_resources(stainless_config: Dict[str, Any]) -> Tuple[Dict[str, Any], Set[str]]:
+def extract_resources(stainless_config: dict[str, Any]) -> tuple[dict[str, Any], set[str]]:
     """
     Extract resource->method->endpoint mappings from Stainless config.
 
@@ -72,50 +72,50 @@ def extract_resources(stainless_config: Dict[str, Any]) -> Tuple[Dict[str, Any],
         - endpoint_map: dict mapping (http_method, path) -> resource_info
         - collision_set: set of resource names that appear in multiple places
     """
-    resources = stainless_config.get('resources', {})
+    resources = stainless_config.get("resources", {})
     endpoint_map = {}
     resource_name_counts = {}  # Count how many times each resource name appears
 
-    def process_resource(resource_name: str, resource_data: Any, parent_path: List[str] = None):
+    def process_resource(resource_name: str, resource_data: Any, parent_path: list[str] = None):
         """Recursively process resources and subresources."""
         if parent_path is None:
             parent_path = []
 
-        current_path = parent_path + [resource_name] if resource_name != '$shared' else parent_path
+        current_path = parent_path + [resource_name] if resource_name != "$shared" else parent_path
 
         if not isinstance(resource_data, dict):
             return
 
         # Track resource name occurrences (skip $shared)
-        if resource_name != '$shared':
+        if resource_name != "$shared":
             resource_name_counts[resource_name] = resource_name_counts.get(resource_name, 0) + 1
 
         # Process methods
-        methods = resource_data.get('methods', {})
+        methods = resource_data.get("methods", {})
         for method_name, method_config in methods.items():
             if isinstance(method_config, dict):
                 # Extract endpoint - could be direct or nested
-                endpoint = method_config.get('endpoint')
+                endpoint = method_config.get("endpoint")
                 if endpoint:
                     http_method, path = parse_endpoint(endpoint)
                     if http_method and path:
                         endpoint_map[(http_method, path)] = {
-                            'operation_name': method_name,
-                            'nesting_path': current_path,
-                            'resource_name': resource_name,
+                            "operation_name": method_name,
+                            "nesting_path": current_path,
+                            "resource_name": resource_name,
                         }
             elif isinstance(method_config, str):
                 # Simple string endpoint like "get /v1/tools"
                 http_method, path = parse_endpoint(method_config)
                 if http_method and path:
                     endpoint_map[(http_method, path)] = {
-                        'operation_name': method_name,
-                        'nesting_path': current_path,
-                        'resource_name': resource_name,
+                        "operation_name": method_name,
+                        "nesting_path": current_path,
+                        "resource_name": resource_name,
                     }
 
         # Process subresources recursively
-        subresources = resource_data.get('subresources', {})
+        subresources = resource_data.get("subresources", {})
         for sub_name, sub_data in subresources.items():
             process_resource(sub_name, sub_data, current_path)
 
@@ -129,7 +129,9 @@ def extract_resources(stainless_config: Dict[str, Any]) -> Tuple[Dict[str, Any],
     return endpoint_map, collision_set
 
 
-def enrich_openapi_spec(openapi_spec: Dict[str, Any], endpoint_map: Dict[Tuple[str, str], Dict[str, Any]], collision_set: Set[str]) -> Dict[str, Any]:
+def enrich_openapi_spec(
+    openapi_spec: dict[str, Any], endpoint_map: dict[tuple[str, str], dict[str, Any]], collision_set: set[str]
+) -> dict[str, Any]:
     """
     Enrich OpenAPI spec with x-operation-name and tags from endpoint_map.
 
@@ -141,13 +143,13 @@ def enrich_openapi_spec(openapi_spec: Dict[str, Any], endpoint_map: Dict[Tuple[s
     Returns:
         Enriched OpenAPI specification
     """
-    paths = openapi_spec.get('paths', {})
+    paths = openapi_spec.get("paths", {})
 
     for path, path_item in paths.items():
         if not isinstance(path_item, dict):
             continue
 
-        for method in ['get', 'post', 'put', 'patch', 'delete', 'options', 'head']:
+        for method in ["get", "post", "put", "patch", "delete", "options", "head"]:
             if method not in path_item:
                 continue
 
@@ -156,8 +158,8 @@ def enrich_openapi_spec(openapi_spec: Dict[str, Any], endpoint_map: Dict[Tuple[s
                 continue
 
             # Normalize any existing tags to lowercase to avoid duplicates
-            if 'tags' in operation and isinstance(operation['tags'], list):
-                operation['tags'] = [tag.lower() for tag in operation['tags']]
+            if "tags" in operation and isinstance(operation["tags"], list):
+                operation["tags"] = [tag.lower() for tag in operation["tags"]]
 
             # Look up this endpoint in our map
             key = (method, path)
@@ -165,10 +167,10 @@ def enrich_openapi_spec(openapi_spec: Dict[str, Any], endpoint_map: Dict[Tuple[s
 
             if resource_info:
                 # Add x-operation-name
-                operation['x-operation-name'] = resource_info['operation_name']
+                operation["x-operation-name"] = resource_info["operation_name"]
 
                 # Build tags based on the resource hierarchy from Stainless
-                nesting_path = resource_info['nesting_path']
+                nesting_path = resource_info["nesting_path"]
                 if nesting_path:
                     tags = []
 
@@ -184,19 +186,19 @@ def enrich_openapi_spec(openapi_spec: Dict[str, Any], endpoint_map: Dict[Tuple[s
                             if resource_name in collision_set:
                                 # Collision: use hierarchical path up to this level
                                 # e.g., for [chat, completions], completions is a collision → chat_completions
-                                hierarchical_tag = '_'.join(nesting_path[:i+1]).lower()
+                                hierarchical_tag = "_".join(nesting_path[: i + 1]).lower()
                                 tags.append(hierarchical_tag)
                             else:
                                 # No collision: use simple name
                                 # e.g., for [conversations, items], items is unique → items
                                 tags.append(resource_name.lower())
 
-                    operation['tags'] = tags
+                    operation["tags"] = tags
 
     return openapi_spec
 
 
-def get_nested_value(obj: Any, path: str) -> Tuple[Any, Any, str]:
+def get_nested_value(obj: Any, path: str) -> tuple[Any, Any, str]:
     """
     Navigate to a nested path in an object and return (parent, current_value, last_key).
 
@@ -207,7 +209,7 @@ def get_nested_value(obj: Any, path: str) -> Tuple[Any, Any, str]:
     Returns:
         Tuple of (parent_object, current_value, last_key)
     """
-    parts = path.split('.')
+    parts = path.split(".")
     current = obj
 
     # Navigate to parent
@@ -226,7 +228,7 @@ def get_nested_value(obj: Any, path: str) -> Tuple[Any, Any, str]:
     return parent, current_value, last_key
 
 
-def apply_patches(openapi_spec: Dict[str, Any], patch_config: Dict[str, Any]) -> Dict[str, Any]:
+def apply_patches(openapi_spec: dict[str, Any], patch_config: dict[str, Any]) -> dict[str, Any]:
     """
     Apply patch operations to the OpenAPI spec.
 
@@ -237,12 +239,12 @@ def apply_patches(openapi_spec: Dict[str, Any], patch_config: Dict[str, Any]) ->
     Returns:
         Patched OpenAPI specification
     """
-    operations = patch_config.get('operations', [])
+    operations = patch_config.get("operations", [])
 
     for op in operations:
-        path = op.get('path')
-        action = op.get('action')
-        value = op.get('value')
+        path = op.get("path")
+        action = op.get("action")
+        value = op.get("value")
 
         if not path or not action:
             print(f"Warning: Skipping invalid operation: {op}")
@@ -251,7 +253,7 @@ def apply_patches(openapi_spec: Dict[str, Any], patch_config: Dict[str, Any]) ->
         try:
             parent, current_value, last_key = get_nested_value(openapi_spec, path)
 
-            if action == 'set':
+            if action == "set":
                 # Set or overwrite a value
                 if isinstance(parent, dict):
                     parent[last_key] = value
@@ -259,7 +261,7 @@ def apply_patches(openapi_spec: Dict[str, Any], patch_config: Dict[str, Any]) ->
                 else:
                     print(f"  ✗ Cannot set {path}: parent is not a dict")
 
-            elif action == 'delete':
+            elif action == "delete":
                 # Delete a key
                 if isinstance(parent, dict) and last_key in parent:
                     del parent[last_key]
@@ -267,7 +269,7 @@ def apply_patches(openapi_spec: Dict[str, Any], patch_config: Dict[str, Any]) ->
                 else:
                     print(f"  ✗ Cannot delete {path}: key not found")
 
-            elif action == 'remove_item':
+            elif action == "remove_item":
                 # Remove an item from a list
                 if isinstance(current_value, list):
                     if value in current_value:
@@ -278,7 +280,7 @@ def apply_patches(openapi_spec: Dict[str, Any], patch_config: Dict[str, Any]) ->
                 else:
                     print(f"  ✗ Cannot remove_item from {path}: not a list")
 
-            elif action == 'append':
+            elif action == "append":
                 # Append to a list
                 if isinstance(current_value, list):
                     if value not in current_value:
@@ -293,7 +295,7 @@ def apply_patches(openapi_spec: Dict[str, Any], patch_config: Dict[str, Any]) ->
                 else:
                     print(f"  ✗ Cannot append to {path}: not a list")
 
-            elif action == 'merge':
+            elif action == "merge":
                 # Merge a dict into existing value
                 if isinstance(current_value, dict) and isinstance(value, dict):
                     current_value.update(value)
@@ -314,27 +316,22 @@ def apply_patches(openapi_spec: Dict[str, Any], patch_config: Dict[str, Any]) ->
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description='Merge Stainless configuration into OpenAPI spec'
+    parser = argparse.ArgumentParser(description="Merge Stainless configuration into OpenAPI spec")
+    parser.add_argument(
+        "--openapi",
+        default="client-sdks/stainless/openapi.yml",
+        help="Path to base OpenAPI specification (default: client-sdks/stainless/openapi.yml)",
     )
     parser.add_argument(
-        '--openapi',
-        default='client-sdks/stainless/openapi.yml',
-        help='Path to base OpenAPI specification (default: client-sdks/stainless/openapi.yml)'
+        "--stainless",
+        default="client-sdks/stainless/openapi.stainless.yml",
+        help="Path to Stainless configuration (default: client-sdks/stainless/openapi.stainless.yml)",
     )
+    parser.add_argument("--patch", help="Optional patch file with additional modifications to apply")
     parser.add_argument(
-        '--stainless',
-        default='client-sdks/stainless/openapi.stainless.yml',
-        help='Path to Stainless configuration (default: client-sdks/stainless/openapi.stainless.yml)'
-    )
-    parser.add_argument(
-        '--patch',
-        help='Optional patch file with additional modifications to apply'
-    )
-    parser.add_argument(
-        '--output',
-        default='client-sdks/openapi/openapi.generator.yml',
-        help='Output path for enriched spec (default: client-sdks/openapi/openapi.generator.yml)'
+        "--output",
+        default="client-sdks/openapi/openapi.generator.yml",
+        help="Output path for enriched spec (default: client-sdks/openapi/openapi.generator.yml)",
     )
 
     args = parser.parse_args()
@@ -345,11 +342,11 @@ def main():
     yaml_loader.default_flow_style = False
 
     print(f"Loading base OpenAPI spec from: {args.openapi}")
-    with open(args.openapi, 'r') as f:
+    with open(args.openapi) as f:
         openapi_spec = yaml_loader.load(f)
 
     print(f"Loading Stainless config from: {args.stainless}")
-    with open(args.stainless, 'r') as f:
+    with open(args.stainless) as f:
         stainless_config = yaml_loader.load(f)
 
     # Extract resource mappings
@@ -365,7 +362,7 @@ def main():
     # Apply patches if provided
     if args.patch:
         print(f"\nApplying patches from: {args.patch}")
-        with open(args.patch, 'r') as f:
+        with open(args.patch) as f:
             patch_config = yaml_loader.load(f)
 
         enriched_spec = apply_patches(enriched_spec, patch_config)
@@ -374,11 +371,11 @@ def main():
     # Write output
     print(f"\nWriting enriched spec to: {args.output}")
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
-    with open(args.output, 'w') as f:
+    with open(args.output, "w") as f:
         yaml_loader.dump(enriched_spec, f)
 
     print("✓ Successfully created openapi.generator.yml")
-    print(f"\nSummary:")
+    print("\nSummary:")
     print(f"  - Base spec: {args.openapi}")
     print(f"  - Stainless config: {args.stainless}")
     if args.patch:
@@ -387,5 +384,5 @@ def main():
     print(f"  - Endpoints enriched: {len(endpoint_map)}")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

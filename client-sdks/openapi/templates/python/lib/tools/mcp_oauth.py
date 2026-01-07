@@ -7,7 +7,7 @@
 import asyncio
 import base64
 import hashlib
-import logging
+import logging  # allow-direct-logging
 import os
 import socket
 import threading
@@ -226,7 +226,7 @@ def find_available_port(start_port, end_port):
 
 class CallbackServer(HTTPServer):
     class OAuthCallbackHandler(BaseHTTPRequestHandler):
-        def do_GET(self):
+        def do_GET(self):  # noqa: N802 - HTTP handler method name
             parsed_path = urllib.parse.urlparse(self.path)
             query_params = urllib.parse.parse_qs(parsed_path.query)
 

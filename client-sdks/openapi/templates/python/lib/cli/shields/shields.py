@@ -29,13 +29,6 @@ def list(ctx):
     console = Console()
 
     shields_list_response = client.shields.list()
-    headers = [
-        "identifier",
-        "provider_alias",
-        "params",
-        "provider_id",
-    ]
-
     if shields_list_response:
         table = Table(
             show_lines=True,  # Add lines between rows for better readability

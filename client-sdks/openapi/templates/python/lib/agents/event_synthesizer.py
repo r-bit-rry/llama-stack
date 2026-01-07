@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
-from logging import getLogger
+from logging import getLogger  # allow-direct-logging
 from typing import Any
 
 from .turn_events import (

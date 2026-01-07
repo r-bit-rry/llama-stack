@@ -187,9 +187,9 @@ def process_openapi(input_file: str, output_file: str, hierarchy_file: str) -> N
     # Write api_hierarchy to file
     hierarchy_data = {
         "api_hierarchy": api_hierarchy,
-        "all_tags": sorted(list(all_tags)),
-        "tags_with_endpoints": sorted(list(tags_with_endpoints)),
-        "tags_without_endpoints": sorted(list(tags_without_endpoints)),
+        "all_tags": sorted(all_tags),
+        "tags_with_endpoints": sorted(tags_with_endpoints),
+        "tags_without_endpoints": sorted(tags_without_endpoints),
     }
 
     with open(hierarchy_file, "w") as f:

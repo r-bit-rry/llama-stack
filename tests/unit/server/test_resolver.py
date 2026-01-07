@@ -11,8 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from pydantic import BaseModel, Field
 
-from llama_stack.apis.inference import Inference
-from llama_stack.core.datatypes import Api, Provider, StackRunConfig
+from llama_stack.core.datatypes import Api, Provider, StackConfig
 from llama_stack.core.resolver import resolve_impls
 from llama_stack.core.routers.inference import InferenceRouter
 from llama_stack.core.routing_tables.models import ModelsRoutingTable
@@ -25,9 +24,9 @@ from llama_stack.core.storage.datatypes import (
     SqlStoreReference,
     StorageConfig,
 )
-from llama_stack.providers.datatypes import InlineProviderSpec, ProviderSpec
-from llama_stack.providers.utils.kvstore import register_kvstore_backends
-from llama_stack.providers.utils.sqlstore.sqlstore import register_sqlstore_backends
+from llama_stack.core.storage.kvstore import register_kvstore_backends
+from llama_stack.core.storage.sqlstore.sqlstore import register_sqlstore_backends
+from llama_stack_api import Inference, InlineProviderSpec, ProviderSpec
 
 
 def add_protocol_methods(cls: type, protocol: type[Protocol]) -> None:
@@ -72,7 +71,7 @@ class SampleImpl:
         pass
 
 
-def make_run_config(**overrides) -> StackRunConfig:
+def make_run_config(**overrides) -> StackConfig:
     storage = overrides.pop(
         "storage",
         StorageConfig(
@@ -98,7 +97,7 @@ def make_run_config(**overrides) -> StackRunConfig:
         storage=storage,
     )
     defaults.update(overrides)
-    return StackRunConfig(**defaults)
+    return StackConfig(**defaults)
 
 
 async def test_resolve_impls_basic():

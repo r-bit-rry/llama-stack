@@ -10,14 +10,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from llama_stack.apis.common.content_types import URL
-from llama_stack.apis.common.errors import ModelNotFoundError
-from llama_stack.apis.common.type_system import NumberType
-from llama_stack.apis.datasets.datasets import Dataset, DatasetPurpose, URIDataSource
-from llama_stack.apis.datatypes import Api
-from llama_stack.apis.models import Model, ModelType
-from llama_stack.apis.shields.shields import Shield
-from llama_stack.apis.tools import ListToolDefsResponse, ToolDef, ToolGroup
 from llama_stack.core.datatypes import RegistryEntrySource
 from llama_stack.core.routing_tables.benchmarks import BenchmarksRoutingTable
 from llama_stack.core.routing_tables.datasets import DatasetsRoutingTable
@@ -25,6 +17,28 @@ from llama_stack.core.routing_tables.models import ModelsRoutingTable
 from llama_stack.core.routing_tables.scoring_functions import ScoringFunctionsRoutingTable
 from llama_stack.core.routing_tables.shields import ShieldsRoutingTable
 from llama_stack.core.routing_tables.toolgroups import ToolGroupsRoutingTable
+from llama_stack_api import (
+    URL,
+    Api,
+    Dataset,
+    DatasetPurpose,
+    ListBenchmarksRequest,
+    ListToolDefsResponse,
+    Model,
+    ModelNotFoundError,
+    ModelType,
+    NumberType,
+    RegisterBenchmarkRequest,
+    Shield,
+    ToolDef,
+    ToolGroup,
+    UnregisterBenchmarkRequest,
+    URIDataSource,
+)
+from llama_stack_api.datasets import (
+    RegisterDatasetRequest,
+    UnregisterDatasetRequest,
+)
 
 
 class Impl:
@@ -130,7 +144,7 @@ class ToolGroupsImpl(Impl):
     async def unregister_toolgroup(self, toolgroup_id: str):
         return toolgroup_id
 
-    async def list_runtime_tools(self, toolgroup_id, mcp_endpoint):
+    async def list_runtime_tools(self, toolgroup_id, mcp_endpoint, authorization=None):
         return ListToolDefsResponse(
             data=[
                 ToolDef(
@@ -165,6 +179,14 @@ async def test_models_routing_table(cached_disk_dist_registry):
     openai_model_ids = {m.id for m in openai_models.data}
     assert "test_provider/test-model" in openai_model_ids
     assert "test_provider/test-model-2" in openai_model_ids
+
+    # Verify custom_metadata is populated with Llama Stack-specific data
+    for openai_model in openai_models.data:
+        assert openai_model.custom_metadata is not None
+        assert "model_type" in openai_model.custom_metadata
+        assert "provider_id" in openai_model.custom_metadata
+        assert "provider_resource_id" in openai_model.custom_metadata
+        assert openai_model.custom_metadata["provider_id"] == "test_provider"
 
     # Test get_object_by_identifier
     model = await table.get_object_by_identifier("model", "test_provider/test-model")
@@ -243,10 +265,18 @@ async def test_datasets_routing_table(cached_disk_dist_registry):
 
     # Register multiple datasets and verify listing
     await table.register_dataset(
-        dataset_id="test-dataset", purpose=DatasetPurpose.eval_messages_answer, source=URIDataSource(uri="test-uri")
+        RegisterDatasetRequest(
+            dataset_id="test-dataset",
+            purpose=DatasetPurpose.eval_messages_answer,
+            source=URIDataSource(uri="test-uri"),
+        )
     )
     await table.register_dataset(
-        dataset_id="test-dataset-2", purpose=DatasetPurpose.eval_messages_answer, source=URIDataSource(uri="test-uri-2")
+        RegisterDatasetRequest(
+            dataset_id="test-dataset-2",
+            purpose=DatasetPurpose.eval_messages_answer,
+            source=URIDataSource(uri="test-uri-2"),
+        )
     )
     datasets = await table.list_datasets()
 
@@ -255,8 +285,8 @@ async def test_datasets_routing_table(cached_disk_dist_registry):
     assert "test-dataset" in dataset_ids
     assert "test-dataset-2" in dataset_ids
 
-    await table.unregister_dataset(dataset_id="test-dataset")
-    await table.unregister_dataset(dataset_id="test-dataset-2")
+    await table.unregister_dataset(UnregisterDatasetRequest(dataset_id="test-dataset"))
+    await table.unregister_dataset(UnregisterDatasetRequest(dataset_id="test-dataset-2"))
 
     datasets = await table.list_datasets()
     assert len(datasets.data) == 0
@@ -405,24 +435,26 @@ async def test_benchmarks_routing_table(cached_disk_dist_registry):
 
     # Register multiple benchmarks and verify listing
     await table.register_benchmark(
-        benchmark_id="test-benchmark",
-        dataset_id="test-dataset",
-        scoring_functions=["test-scoring-fn", "test-scoring-fn-2"],
+        RegisterBenchmarkRequest(
+            benchmark_id="test-benchmark",
+            dataset_id="test-dataset",
+            scoring_functions=["test-scoring-fn", "test-scoring-fn-2"],
+        )
     )
-    benchmarks = await table.list_benchmarks()
+    benchmarks = await table.list_benchmarks(ListBenchmarksRequest())
 
     assert len(benchmarks.data) == 1
     benchmark_ids = {b.identifier for b in benchmarks.data}
     assert "test-benchmark" in benchmark_ids
 
     # Unregister the benchmark and verify removal
-    await table.unregister_benchmark(benchmark_id="test-benchmark")
-    benchmarks_after = await table.list_benchmarks()
+    await table.unregister_benchmark(UnregisterBenchmarkRequest(benchmark_id="test-benchmark"))
+    benchmarks_after = await table.list_benchmarks(ListBenchmarksRequest())
     assert len(benchmarks_after.data) == 0
 
     # Unregistering a non-existent benchmark should raise a clear error
     with pytest.raises(ValueError, match="Benchmark 'dummy_benchmark' not found"):
-        await table.unregister_benchmark(benchmark_id="dummy_benchmark")
+        await table.unregister_benchmark(UnregisterBenchmarkRequest(benchmark_id="dummy_benchmark"))
 
 
 async def test_tool_groups_routing_table(cached_disk_dist_registry):

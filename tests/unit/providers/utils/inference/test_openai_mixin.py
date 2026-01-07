@@ -12,17 +12,17 @@ from unittest.mock import AsyncMock, MagicMock, Mock, PropertyMock, patch
 import pytest
 from pydantic import BaseModel, Field
 
-from llama_stack.apis.inference import (
+from llama_stack.core.request_headers import request_provider_data_context
+from llama_stack.providers.utils.inference.model_registry import RemoteInferenceProviderConfig
+from llama_stack.providers.utils.inference.openai_mixin import OpenAIMixin
+from llama_stack_api import (
     Model,
+    ModelType,
     OpenAIChatCompletionRequestWithExtraBody,
     OpenAICompletionRequestWithExtraBody,
     OpenAIEmbeddingsRequestWithExtraBody,
     OpenAIUserMessageParam,
 )
-from llama_stack.apis.models import ModelType
-from llama_stack.core.request_headers import request_provider_data_context
-from llama_stack.providers.utils.inference.model_registry import RemoteInferenceProviderConfig
-from llama_stack.providers.utils.inference.openai_mixin import OpenAIMixin
 
 
 class OpenAIMixinImpl(OpenAIMixin):
@@ -42,6 +42,28 @@ class OpenAIMixinWithEmbeddingsImpl(OpenAIMixinImpl):
         "text-embedding-3-small": {"embedding_dimension": 1536, "context_length": 8192},
         "text-embedding-ada-002": {"embedding_dimension": 1536, "context_length": 8192},
     }
+
+
+class OpenAIMixinWithCustomModelConstruction(OpenAIMixinImpl):
+    """Test implementation that uses construct_model_from_identifier to add rerank models"""
+
+    embedding_model_metadata: dict[str, dict[str, int]] = {
+        "text-embedding-3-small": {"embedding_dimension": 1536, "context_length": 8192},
+        "text-embedding-ada-002": {"embedding_dimension": 1536, "context_length": 8192},
+    }
+
+    # Adds rerank models via construct_model_from_identifier
+    rerank_model_ids: set[str] = {"rerank-model-1", "rerank-model-2"}
+
+    def construct_model_from_identifier(self, identifier: str) -> Model:
+        if identifier in self.rerank_model_ids:
+            return Model(
+                provider_id=self.__provider_id__,  # type: ignore[attr-defined]
+                provider_resource_id=identifier,
+                identifier=identifier,
+                model_type=ModelType.rerank,
+            )
+        return super().construct_model_from_identifier(identifier)
 
 
 @pytest.fixture
@@ -66,6 +88,13 @@ def mixin_with_embeddings():
     """Create a test instance of OpenAIMixin with embedding model metadata"""
     config = RemoteInferenceProviderConfig()
     return OpenAIMixinWithEmbeddingsImpl(config=config)
+
+
+@pytest.fixture
+def mixin_with_custom_model_construction():
+    """Create a test instance using custom construct_model_from_identifier"""
+    config = RemoteInferenceProviderConfig()
+    return OpenAIMixinWithCustomModelConstruction(config=config)
 
 
 @pytest.fixture
@@ -117,6 +146,19 @@ def mock_client_context():
         return patch.object(type(mixin), "client", new_callable=PropertyMock, return_value=mock_client)
 
     return _mock_client_context
+
+
+def _assert_models_match_expected(actual_models, expected_models):
+    """Verify the models match expected attributes.
+
+    Args:
+        actual_models: List of models to verify
+        expected_models: Mapping of model identifier to expected attribute values
+    """
+    for identifier, expected_attrs in expected_models.items():
+        model = next(m for m in actual_models if m.identifier == identifier)
+        for attr_name, expected_value in expected_attrs.items():
+            assert getattr(model, attr_name) == expected_value
 
 
 class TestOpenAIMixinListModels:
@@ -348,21 +390,71 @@ class TestOpenAIMixinEmbeddingModelMetadata:
             assert result is not None
             assert len(result) == 2
 
-            # Find the models in the result
-            embedding_model = next(m for m in result if m.identifier == "text-embedding-3-small")
-            llm_model = next(m for m in result if m.identifier == "gpt-4")
+            expected_models = {
+                "text-embedding-3-small": {
+                    "model_type": ModelType.embedding,
+                    "metadata": {"embedding_dimension": 1536, "context_length": 8192},
+                    "provider_id": "test-provider",
+                    "provider_resource_id": "text-embedding-3-small",
+                },
+                "gpt-4": {
+                    "model_type": ModelType.llm,
+                    "metadata": {},
+                    "provider_id": "test-provider",
+                    "provider_resource_id": "gpt-4",
+                },
+            }
 
-            # Check embedding model
-            assert embedding_model.model_type == ModelType.embedding
-            assert embedding_model.metadata == {"embedding_dimension": 1536, "context_length": 8192}
-            assert embedding_model.provider_id == "test-provider"
-            assert embedding_model.provider_resource_id == "text-embedding-3-small"
+            _assert_models_match_expected(result, expected_models)
 
-            # Check LLM model
-            assert llm_model.model_type == ModelType.llm
-            assert llm_model.metadata == {}  # No metadata for LLMs
-            assert llm_model.provider_id == "test-provider"
-            assert llm_model.provider_resource_id == "gpt-4"
+
+class TestOpenAIMixinCustomModelConstruction:
+    """Test cases for mixed model types (LLM, embedding, rerank) through construct_model_from_identifier"""
+
+    async def test_mixed_model_types_identification(self, mixin_with_custom_model_construction, mock_client_context):
+        """Test that LLM, embedding, and rerank models are correctly identified with proper types and metadata"""
+        # Create mock models: 1 embedding, 1 rerank, 1 LLM
+        mock_embedding_model = MagicMock(id="text-embedding-3-small")
+        mock_rerank_model = MagicMock(id="rerank-model-1")
+        mock_llm_model = MagicMock(id="gpt-4")
+        mock_models = [mock_embedding_model, mock_rerank_model, mock_llm_model]
+
+        mock_client = MagicMock()
+
+        async def mock_models_list():
+            for model in mock_models:
+                yield model
+
+        mock_client.models.list.return_value = mock_models_list()
+
+        with mock_client_context(mixin_with_custom_model_construction, mock_client):
+            result = await mixin_with_custom_model_construction.list_models()
+
+            assert result is not None
+            assert len(result) == 3
+
+            expected_models = {
+                "text-embedding-3-small": {
+                    "model_type": ModelType.embedding,
+                    "metadata": {"embedding_dimension": 1536, "context_length": 8192},
+                    "provider_id": "test-provider",
+                    "provider_resource_id": "text-embedding-3-small",
+                },
+                "rerank-model-1": {
+                    "model_type": ModelType.rerank,
+                    "metadata": {},
+                    "provider_id": "test-provider",
+                    "provider_resource_id": "rerank-model-1",
+                },
+                "gpt-4": {
+                    "model_type": ModelType.llm,
+                    "metadata": {},
+                    "provider_id": "test-provider",
+                    "provider_resource_id": "gpt-4",
+                },
+            }
+
+            _assert_models_match_expected(result, expected_models)
 
 
 class TestOpenAIMixinAllowedModels:
@@ -842,3 +934,214 @@ class TestOpenAIMixinAllowedModelsInference:
                         model="gpt-4", messages=[OpenAIUserMessageParam(role="user", content="Hello")]
                     )
                 )
+
+
+class TestOpenAIMixinStreamOptionsInjection:
+    """Test cases for automatic stream_options injection when telemetry is active"""
+
+    async def test_chat_completion_injects_stream_options_when_telemetry_active(self, mixin, mock_client_context):
+        """Test that stream_options is injected for streaming chat completion when telemetry is active"""
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = AsyncMock(return_value=MagicMock())
+
+        # Mock OpenTelemetry span as recording
+        mock_span = MagicMock()
+        mock_span.is_recording.return_value = True
+
+        with mock_client_context(mixin, mock_client):
+            with patch("opentelemetry.trace.get_current_span", return_value=mock_span):
+                await mixin.openai_chat_completion(
+                    OpenAIChatCompletionRequestWithExtraBody(
+                        model="gpt-4", messages=[OpenAIUserMessageParam(role="user", content="Hello")], stream=True
+                    )
+                )
+
+                mock_client.chat.completions.create.assert_called_once()
+                call_kwargs = mock_client.chat.completions.create.call_args[1]
+                assert call_kwargs["stream_options"] == {"include_usage": True}
+
+    async def test_chat_completion_preserves_existing_stream_options(self, mixin, mock_client_context):
+        """Test that existing stream_options are preserved with include_usage added"""
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = AsyncMock(return_value=MagicMock())
+
+        mock_span = MagicMock()
+        mock_span.is_recording.return_value = True
+
+        with mock_client_context(mixin, mock_client):
+            with patch("opentelemetry.trace.get_current_span", return_value=mock_span):
+                await mixin.openai_chat_completion(
+                    OpenAIChatCompletionRequestWithExtraBody(
+                        model="gpt-4",
+                        messages=[OpenAIUserMessageParam(role="user", content="Hello")],
+                        stream=True,
+                        stream_options={"other_option": True},
+                    )
+                )
+
+                call_kwargs = mock_client.chat.completions.create.call_args[1]
+                assert call_kwargs["stream_options"] == {"other_option": True, "include_usage": True}
+
+    async def test_chat_completion_no_injection_when_telemetry_inactive(self, mixin, mock_client_context):
+        """Test that stream_options is NOT injected when telemetry is inactive"""
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = AsyncMock(return_value=MagicMock())
+
+        # Mock OpenTelemetry span as not recording
+        mock_span = MagicMock()
+        mock_span.is_recording.return_value = False
+
+        with mock_client_context(mixin, mock_client):
+            with patch("opentelemetry.trace.get_current_span", return_value=mock_span):
+                await mixin.openai_chat_completion(
+                    OpenAIChatCompletionRequestWithExtraBody(
+                        model="gpt-4", messages=[OpenAIUserMessageParam(role="user", content="Hello")], stream=True
+                    )
+                )
+
+                call_kwargs = mock_client.chat.completions.create.call_args[1]
+                assert "stream_options" not in call_kwargs or call_kwargs["stream_options"] is None
+
+    async def test_chat_completion_no_injection_when_not_streaming(self, mixin, mock_client_context):
+        """Test that stream_options is NOT injected for non-streaming requests"""
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = AsyncMock(return_value=MagicMock())
+
+        mock_span = MagicMock()
+        mock_span.is_recording.return_value = True
+
+        with mock_client_context(mixin, mock_client):
+            with patch("opentelemetry.trace.get_current_span", return_value=mock_span):
+                await mixin.openai_chat_completion(
+                    OpenAIChatCompletionRequestWithExtraBody(
+                        model="gpt-4", messages=[OpenAIUserMessageParam(role="user", content="Hello")], stream=False
+                    )
+                )
+
+                call_kwargs = mock_client.chat.completions.create.call_args[1]
+                assert "stream_options" not in call_kwargs or call_kwargs["stream_options"] is None
+
+    async def test_completion_injects_stream_options_when_telemetry_active(self, mixin, mock_client_context):
+        """Test that stream_options is injected for streaming completion when telemetry is active"""
+        mock_client = MagicMock()
+        mock_client.completions.create = AsyncMock(return_value=MagicMock())
+
+        mock_span = MagicMock()
+        mock_span.is_recording.return_value = True
+
+        with mock_client_context(mixin, mock_client):
+            with patch("opentelemetry.trace.get_current_span", return_value=mock_span):
+                await mixin.openai_completion(
+                    OpenAICompletionRequestWithExtraBody(model="text-davinci-003", prompt="Hello", stream=True)
+                )
+
+                mock_client.completions.create.assert_called_once()
+                call_kwargs = mock_client.completions.create.call_args[1]
+                assert call_kwargs["stream_options"] == {"include_usage": True}
+
+    async def test_completion_no_injection_when_telemetry_inactive(self, mixin, mock_client_context):
+        """Test that stream_options is NOT injected for completion when telemetry is inactive"""
+        mock_client = MagicMock()
+        mock_client.completions.create = AsyncMock(return_value=MagicMock())
+
+        mock_span = MagicMock()
+        mock_span.is_recording.return_value = False
+
+        with mock_client_context(mixin, mock_client):
+            with patch("opentelemetry.trace.get_current_span", return_value=mock_span):
+                await mixin.openai_completion(
+                    OpenAICompletionRequestWithExtraBody(model="text-davinci-003", prompt="Hello", stream=True)
+                )
+
+                call_kwargs = mock_client.completions.create.call_args[1]
+                assert "stream_options" not in call_kwargs or call_kwargs["stream_options"] is None
+
+    async def test_params_not_mutated(self, mixin, mock_client_context):
+        """Test that original params object is not mutated when stream_options is injected"""
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = AsyncMock(return_value=MagicMock())
+
+        mock_span = MagicMock()
+        mock_span.is_recording.return_value = True
+
+        original_params = OpenAIChatCompletionRequestWithExtraBody(
+            model="gpt-4", messages=[OpenAIUserMessageParam(role="user", content="Hello")], stream=True
+        )
+
+        with mock_client_context(mixin, mock_client):
+            with patch("opentelemetry.trace.get_current_span", return_value=mock_span):
+                await mixin.openai_chat_completion(original_params)
+
+                # Original params should not be modified
+                assert original_params.stream_options is None
+
+    async def test_chat_completion_overrides_include_usage_false(self, mixin, mock_client_context):
+        """Test that include_usage=False is overridden when telemetry is active"""
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = AsyncMock(return_value=MagicMock())
+
+        mock_span = MagicMock()
+        mock_span.is_recording.return_value = True
+
+        with mock_client_context(mixin, mock_client):
+            with patch("opentelemetry.trace.get_current_span", return_value=mock_span):
+                await mixin.openai_chat_completion(
+                    OpenAIChatCompletionRequestWithExtraBody(
+                        model="gpt-4",
+                        messages=[OpenAIUserMessageParam(role="user", content="Hello")],
+                        stream=True,
+                        stream_options={"include_usage": False},
+                    )
+                )
+
+                call_kwargs = mock_client.chat.completions.create.call_args[1]
+                # Telemetry must override False to ensure complete metrics
+                assert call_kwargs["stream_options"]["include_usage"] is True
+
+    async def test_no_injection_when_provider_doesnt_support_stream_options(self, mixin, mock_client_context):
+        """Test that stream_options is NOT injected when provider doesn't support it"""
+        # Set supports_stream_options to False (like Ollama/vLLM)
+        mixin.supports_stream_options = False
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = AsyncMock(return_value=MagicMock())
+
+        # Mock OpenTelemetry span as recording (telemetry is active)
+        mock_span = MagicMock()
+        mock_span.is_recording.return_value = True
+
+        with mock_client_context(mixin, mock_client):
+            with patch("opentelemetry.trace.get_current_span", return_value=mock_span):
+                await mixin.openai_chat_completion(
+                    OpenAIChatCompletionRequestWithExtraBody(
+                        model="gpt-4", messages=[OpenAIUserMessageParam(role="user", content="Hello")], stream=True
+                    )
+                )
+
+                call_kwargs = mock_client.chat.completions.create.call_args[1]
+                # Should NOT inject stream_options even though telemetry is active
+                assert "stream_options" not in call_kwargs or call_kwargs["stream_options"] is None
+
+    async def test_completion_no_injection_when_provider_doesnt_support_stream_options(
+        self, mixin, mock_client_context
+    ):
+        """Test that stream_options is NOT injected for completion when provider doesn't support it"""
+        # Set supports_stream_options to False (like Ollama/vLLM)
+        mixin.supports_stream_options = False
+
+        mock_client = MagicMock()
+        mock_client.completions.create = AsyncMock(return_value=MagicMock())
+
+        # Mock OpenTelemetry span as recording (telemetry is active)
+        mock_span = MagicMock()
+        mock_span.is_recording.return_value = True
+
+        with mock_client_context(mixin, mock_client):
+            with patch("opentelemetry.trace.get_current_span", return_value=mock_span):
+                await mixin.openai_completion(
+                    OpenAICompletionRequestWithExtraBody(model="text-davinci-003", prompt="Hello", stream=True)
+                )
+
+                call_kwargs = mock_client.completions.create.call_args[1]
+                # Should NOT inject stream_options even though telemetry is active
+                assert "stream_options" not in call_kwargs or call_kwargs["stream_options"] is None

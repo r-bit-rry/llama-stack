@@ -26,14 +26,6 @@ def models():
 def list_models(ctx):
     client = ctx.obj["client"]
     console = Console()
-
-    headers = [
-        "model_type",
-        "identifier",
-        "provider_alias",
-        "metadata",
-        "provider_id",
-    ]
     response = client.models.list()
     if response:
         table = Table(

@@ -4,7 +4,7 @@
 # This source code is licensed under the terms described in the LICENSE file in
 # the root directory of this source tree.
 import json
-import logging
+import logging  # allow-direct-logging
 from collections.abc import AsyncIterator, Callable, Iterator
 from typing import (
     Any,
@@ -45,7 +45,7 @@ class ToolUtils:
             return content
         if content is None:
             return ""
-        if isinstance(content, (dict, list)):
+        if isinstance(content, dict | list):
             try:
                 return json.dumps(content)
             except TypeError:

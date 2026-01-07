@@ -41,6 +41,15 @@ const sidebars: SidebarsConfig = {
             'concepts/apis/api_leveling',
           ],
         },
+        {
+          type: 'category',
+          label: 'Vector Stores',
+          collapsed: true,
+          items: [
+            'concepts/file_operations_vector_stores',
+            'concepts/vector_stores_configuration',
+          ],
+        },
         'concepts/distributions',
         'concepts/resources',
       ],
@@ -57,6 +66,7 @@ const sidebars: SidebarsConfig = {
         'distributions/importing_as_library',
         'distributions/configuration',
         'distributions/starting_llama_stack_server',
+        'distributions/llama_stack_ui',
         {
           type: 'category',
           label: 'Self-Hosted Distributions',
@@ -240,15 +250,6 @@ const sidebars: SidebarsConfig = {
             'providers/eval/index',
             'providers/eval/inline_meta-reference',
             'providers/eval/remote_nvidia'
-          ],
-        },
-        {
-          type: 'category',
-          label: 'Telemetry',
-          collapsed: true,
-          items: [
-            'providers/telemetry/index',
-            'providers/telemetry/inline_meta-reference'
           ],
         },
         {

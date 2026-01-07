@@ -17,6 +17,7 @@ INFERENCE_MODE="replay"
 COMMAND=""
 USE_COPY_NOT_MOUNT=false
 NO_REBUILD=false
+PLATFORM=""
 
 # Function to display usage
 usage() {
@@ -36,6 +37,7 @@ Options:
     --inference-mode STRING  Inference mode: replay, record-if-missing or record (default: replay)
     --copy-source            Copy source into image instead of mounting (default: auto-detect CI, otherwise mount)
     --no-rebuild             Skip building the image, just start the container (default: false)
+    --platform STRING        Target platform for build (e.g., 'linux/arm64', 'linux/amd64'). Uses docker buildx or podman buildx if specified.
     --help                   Show this help message
 
 Examples:
@@ -50,6 +52,9 @@ Examples:
 
     # Start with custom port
     $0 start --distro starter --port 8080
+
+    # Build for ARM64 platforms
+    $0 start --distro ci-tests --platform linux/arm64
 
     # Check status
     $0 status --distro ci-tests
@@ -115,6 +120,10 @@ while [[ $# -gt 0 ]]; do
     --no-rebuild)
         NO_REBUILD=true
         shift
+        ;;
+    --platform)
+        PLATFORM="$2"
+        shift 2
         ;;
     --help)
         usage
@@ -204,16 +213,58 @@ build_image() {
         exit 1
     fi
 
-    local build_cmd=(
-        docker
-        build
-        "$repo_root"
-        -f "$containerfile"
-        --tag "localhost/distribution-$DISTRO:dev"
-        --build-arg "DISTRO_NAME=$DISTRO"
-        --build-arg "INSTALL_MODE=editable"
-        --build-arg "LLAMA_STACK_DIR=/workspace"
-    )
+    # Determine if we should use buildx for multi-arch builds
+    local use_buildx=false
+    if [[ -n "$PLATFORM" ]]; then
+        use_buildx=true
+        echo "Building for platform: $PLATFORM (using docker buildx)"
+        # Ensure buildx is available
+        if ! docker buildx version &>/dev/null; then
+            echo "Error: docker buildx or podman buildx is required for --platform builds"
+            echo "Install Docker Buildx (or update Docker to a version that includes it) or Podman with buildx support"
+            exit 1
+        fi
+        # Create buildx builder if it doesn't exist
+        docker buildx create --name llama-stack-builder --use 2>/dev/null || docker buildx use llama-stack-builder 2>/dev/null || true
+    fi
+
+    local build_cmd
+    if [[ "$use_buildx" == "true" ]]; then
+        build_cmd=(
+            docker
+            buildx
+            build
+            --platform "$PLATFORM"
+            --load
+            "$repo_root"
+            -f "$containerfile"
+            --tag "localhost/distribution-$DISTRO:dev"
+            --build-arg "DISTRO_NAME=$DISTRO"
+            --build-arg "INSTALL_MODE=editable"
+            --build-arg "LLAMA_STACK_DIR=/workspace"
+        )
+    else
+        build_cmd=(
+            docker
+            build
+            "$repo_root"
+            -f "$containerfile"
+            --tag "localhost/distribution-$DISTRO:dev"
+            --build-arg "DISTRO_NAME=$DISTRO"
+            --build-arg "INSTALL_MODE=editable"
+            --build-arg "LLAMA_STACK_DIR=/workspace"
+        )
+    fi
+
+    # Pass UV index configuration for release branches
+    if [[ -n "${UV_EXTRA_INDEX_URL:-}" ]]; then
+        echo "Adding UV_EXTRA_INDEX_URL to docker build: $UV_EXTRA_INDEX_URL"
+        build_cmd+=(--build-arg "UV_EXTRA_INDEX_URL=$UV_EXTRA_INDEX_URL")
+    fi
+    if [[ -n "${UV_INDEX_STRATEGY:-}" ]]; then
+        echo "Adding UV_INDEX_STRATEGY to docker build: $UV_INDEX_STRATEGY"
+        build_cmd+=(--build-arg "UV_INDEX_STRATEGY=$UV_INDEX_STRATEGY")
+    fi
 
     # Pass UV index configuration for release branches
     if [[ -n "${UV_EXTRA_INDEX_URL:-}" ]]; then
@@ -287,9 +338,9 @@ start_container() {
     # On macOS/Windows, use host.docker.internal to reach host from container
     # On Linux with --network host, use localhost
     if [[ "$(uname)" == "Darwin" ]] || [[ "$(uname)" == *"MINGW"* ]]; then
-        OLLAMA_URL="${OLLAMA_URL:-http://host.docker.internal:11434}"
+        OLLAMA_URL="${OLLAMA_URL:-http://host.docker.internal:11434/v1}"
     else
-        OLLAMA_URL="${OLLAMA_URL:-http://localhost:11434}"
+        OLLAMA_URL="${OLLAMA_URL:-http://localhost:11434/v1}"
     fi
     DOCKER_ENV_VARS="$DOCKER_ENV_VARS -e OLLAMA_URL=$OLLAMA_URL"
 

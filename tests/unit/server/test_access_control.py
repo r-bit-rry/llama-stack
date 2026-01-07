@@ -10,13 +10,11 @@ import pytest
 import yaml
 from pydantic import TypeAdapter, ValidationError
 
-from llama_stack.apis.common.errors import ModelNotFoundError
-from llama_stack.apis.datatypes import Api
-from llama_stack.apis.models import ModelType
 from llama_stack.core.access_control.access_control import AccessDeniedError, is_action_allowed
 from llama_stack.core.datatypes import AccessRule, ModelWithOwner, User
 from llama_stack.core.routers.inference import InferenceRouter
 from llama_stack.core.routing_tables.models import ModelsRoutingTable
+from llama_stack_api import Api, Model, ModelNotFoundError, ModelType
 
 
 class AsyncMock(MagicMock):
@@ -80,7 +78,7 @@ async def test_access_control_with_cache(mock_get_authenticated_user, test_setup
     with pytest.raises(ValueError):
         await routing_table.get_model("model-data-scientist")
 
-    mock_get_authenticated_user.return_value = User("test-user", {"roles": ["data-scientist"], "teams": ["other-team"]})
+    mock_get_authenticated_user.return_value = User("test-user", {"roles": ["user"], "teams": ["other-team"]})
     all_models = await routing_table.list_models()
     assert len(all_models.data) == 1
     assert all_models.data[0].identifier == "model-public"
@@ -156,16 +154,16 @@ async def test_access_control_empty_attributes(mock_get_authenticated_user, test
     )
     await registry.register(model)
     mock_get_authenticated_user.return_value = User(
-        "test-user",
+        "differentuser",
         {
             "roles": [],
         },
     )
-    result = await routing_table.get_model("model-empty-attrs")
-    assert result.identifier == "model-empty-attrs"
+    with pytest.raises(ValueError):
+        await routing_table.get_model("model-empty-attrs")
     all_models = await routing_table.list_models()
     model_ids = [m.identifier for m in all_models.data]
-    assert "model-empty-attrs" in model_ids
+    assert "model-empty-attrs" not in model_ids
 
 
 @patch("llama_stack.core.routing_tables.common.get_authenticated_user")
@@ -225,7 +223,7 @@ async def test_automatic_access_attributes(mock_get_authenticated_user, test_set
     assert registered_model.owner.attributes["projects"] == ["llama-3"]
 
     # Verify another user without matching attributes can't access it
-    mock_get_authenticated_user.return_value = User("test-user", {"roles": ["engineer"], "teams": ["infra-team"]})
+    mock_get_authenticated_user.return_value = User("test-user2", {"roles": ["engineer"], "teams": ["infra-team"]})
     with pytest.raises(ValueError):
         await routing_table.get_model("auto-access-model")
 
@@ -365,6 +363,7 @@ def test_permit_when():
 
 
 def test_permit_unless():
+    # permit unless both conditions are met
     config = """
     - permit:
         principal: user-1
@@ -379,10 +378,10 @@ def test_permit_unless():
         identifier="mymodel",
         provider_id="myprovider",
         model_type=ModelType.llm,
-        owner=User("testuser", {"namespaces": ["foo"]}),
+        owner=User("testuser", {"namespaces": ["foo"], "teams": ["ml-team"]}),
     )
     assert is_action_allowed(policy, "read", model, User("user-1", {"namespaces": ["foo"]}))
-    assert not is_action_allowed(policy, "read", model, User("user-1", {"namespaces": ["bar"]}))
+    assert not is_action_allowed(policy, "read", model, User("user-1", {"namespaces": ["bar"], "teams": ["ml-team"]}))
     assert not is_action_allowed(policy, "read", model, User("user-2", {"namespaces": ["foo"]}))
 
 
@@ -654,3 +653,84 @@ class TestInferenceRouterRBACBypass:
         provider, resource_id = await router._get_model_provider("test-provider/admin-resource", "llm")
         assert provider == mock_routing_table.impls_by_provider_id["test-provider"]
         assert resource_id == "admin-resource"
+
+
+class TestModelListingRBACBypass:
+    """Test RBAC bypass vulnerability in dynamic model listing via provider_data."""
+
+    @patch("llama_stack.core.routing_tables.models.instantiate_class_type")
+    @patch("llama_stack.core.routing_tables.models.PROVIDER_DATA_VAR")
+    @patch("llama_stack.core.routing_tables.models.get_authenticated_user")
+    @patch("llama_stack.core.routing_tables.common.get_authenticated_user")
+    async def test_dynamic_models_respect_rbac(
+        self,
+        mock_get_user_common,
+        mock_get_user_models,
+        mock_provider_data,
+        mock_instantiate_class,
+        cached_disk_dist_registry,
+        rbac_policy,
+        admin_user,
+        restricted_user,
+    ):
+        """Test that models fetched via provider_data are filtered by RBAC."""
+        from llama_stack.core.request_headers import NeedsRequestProviderData
+
+        # Create a mock provider that supports provider_data
+        mock_provider = Mock(spec=NeedsRequestProviderData)
+        mock_provider.__provider_spec__ = MagicMock()
+        mock_provider.__provider_spec__.api = Api.inference
+        mock_provider.__provider_spec__.provider_data_validator = "dict"
+
+        # Mock the validator to always succeed
+        mock_validator = MagicMock(return_value={})
+        mock_instantiate_class.return_value = mock_validator
+
+        # Mock list_models to return dynamic models
+        # These are fetched via provider_data and don't have owners initially
+        dynamic_model1 = Model(
+            identifier="dynamic-model-1",
+            provider_id="test-provider",
+            provider_resource_id="dynamic-model-1",
+            model_type=ModelType.llm,
+            metadata={},
+        )
+        dynamic_model2 = Model(
+            identifier="dynamic-model-2",
+            provider_id="test-provider",
+            provider_resource_id="dynamic-model-2",
+            model_type=ModelType.llm,
+            metadata={},
+        )
+        mock_provider.list_models = AsyncMock(return_value=[dynamic_model1, dynamic_model2])
+
+        # Setup routing table with policy (no models pre-registered in registry)
+        routing_table = ModelsRoutingTable(
+            impls_by_provider_id={"test-provider": mock_provider},
+            dist_registry=cached_disk_dist_registry,
+            policy=rbac_policy,
+        )
+
+        # Set up provider_data context (user has credentials for this provider)
+        mock_provider_data.get.return_value = {"api_key": "test-key"}
+
+        # Test 1: Admin user can see dynamic models
+        # Admin rule allows all actions, so they can see models even without ownership
+        mock_get_user_common.return_value = admin_user
+        mock_get_user_models.return_value = admin_user
+
+        result = await routing_table.list_models()
+        model_ids = [m.identifier for m in result.data]
+        assert "test-provider/dynamic-model-1" in model_ids
+        assert "test-provider/dynamic-model-2" in model_ids
+
+        # Test 2: Restricted user CANNOT see dynamic models
+        # Dynamic models have no owner, and policy requires either admin role OR ownership
+        # This demonstrates the fix: before, these would be returned without RBAC checks
+        mock_get_user_common.return_value = restricted_user
+        mock_get_user_models.return_value = restricted_user
+
+        result = await routing_table.list_models()
+        model_ids = [m.identifier for m in result.data]
+        # Restricted user should see no models (no ownership, not admin)
+        assert len(model_ids) == 0

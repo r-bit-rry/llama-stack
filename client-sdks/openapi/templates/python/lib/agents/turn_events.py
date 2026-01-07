@@ -18,7 +18,7 @@ Key concepts:
 """
 
 from dataclasses import dataclass
-from typing import Any, Literal, Union
+from typing import Any, Literal
 
 from .types import ToolCall
 
@@ -169,7 +169,7 @@ class ToolCallCompletedDelta:
 
 
 # Union of all delta types
-StepDelta = Union[TextDelta, ToolCallIssuedDelta, ToolCallDelta, ToolCallCompletedDelta]
+StepDelta = TextDelta | ToolCallIssuedDelta | ToolCallDelta | ToolCallCompletedDelta
 
 
 @dataclass
@@ -222,7 +222,7 @@ class ToolExecutionStepResult:
 
 
 # Union of all result types
-StepResult = Union[InferenceStepResult, ToolExecutionStepResult]
+StepResult = InferenceStepResult | ToolExecutionStepResult
 
 
 @dataclass
@@ -244,14 +244,7 @@ class StepCompleted:
 
 
 # Union of all event types
-AgentEvent = Union[
-    TurnStarted,
-    StepStarted,
-    StepProgress,
-    StepCompleted,
-    TurnCompleted,
-    TurnFailed,
-]
+AgentEvent = TurnStarted | StepStarted | StepProgress | StepCompleted | TurnCompleted | TurnFailed
 
 
 @dataclass

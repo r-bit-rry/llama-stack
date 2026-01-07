@@ -45,7 +45,7 @@ uv run --env-file .env -- pytest -v tests/integration/inference/test_text_infere
 We use [pre-commit](https://pre-commit.com/) to run linting and formatting checks on your code. You can install the pre-commit hooks by running:
 
 ```bash
-uv pip install pre-commit==4.3.0
+uv pip install 'pre-commit>=4.4.0'
 uv run pre-commit install
 ```
 
@@ -60,6 +60,18 @@ uv run pre-commit run --all-files -v
 ```
 
 The `-v` (verbose) parameter is optional but often helpful for getting more information about any issues with that the pre-commit checks identify.
+
+To run the expanded mypy configuration that CI enforces, use:
+
+```bash
+uv run pre-commit run mypy-full --hook-stage manual --all-files
+```
+
+or invoke mypy directly with all optional dependencies:
+
+```bash
+uv run --group dev --group type_checking mypy
+```
 
 ```{caution}
 Before pushing your changes, make sure that the pre-commit hooks have passed successfully.
@@ -219,7 +231,7 @@ npm run serve
 If you modify or add new API endpoints, update the API documentation accordingly. You can do this by running the following command:
 
 ```bash
-uv run ./docs/openapi_generator/run_openapi_generator.sh
+uv run ./scripts/run_openapi_generator.sh
 ```
 
 The generated API schema will be available in `docs/static/`. Make sure to review the changes before committing.

@@ -10,20 +10,65 @@
 # This script sets up Jaeger, OpenTelemetry Collector, Prometheus, and Grafana using Podman
 # For whoever is interested in testing the telemetry stack, you can run this script to set up the stack.
 #    export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
-#    export TELEMETRY_SINKS=otel_trace,otel_metric
+#    export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
 #    export OTEL_SERVICE_NAME=my-llama-app
 # Then run the distro server
 
 set -Eeuo pipefail
 
-if command -v podman &> /dev/null; then
-  CONTAINER_RUNTIME="podman"
-elif command -v docker &> /dev/null; then
-  CONTAINER_RUNTIME="docker"
-else
-  echo "🚨 Neither Podman nor Docker could be found"
-  echo "Install Docker: https://docs.docker.com/get-docker/ or Podman: https://podman.io/getting-started/installation"
-  exit 1
+# Parse arguments
+CONTAINER_RUNTIME=""
+
+print_usage() {
+  echo "Usage: $0 [--container docker|podman]"
+  echo ""
+  echo "Options:"
+  echo "  -c, --container    Choose container runtime (docker or podman)."
+  echo "  -h, --help         Show this help."
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -c|--container)
+      if [[ $# -lt 2 ]]; then
+        echo "🚨 --container requires a value: docker or podman"
+        exit 1
+      fi
+      case "$2" in
+        docker|podman)
+          CONTAINER_RUNTIME="$2"
+          shift 2
+          ;;
+        *)
+          echo "🚨 Invalid container runtime: $2"
+          echo "Valid options are: docker, podman"
+          exit 1
+          ;;
+      esac
+      ;;
+    -h|--help)
+      print_usage
+      exit 0
+      ;;
+    *)
+      echo "🚨 Unknown argument: $1"
+      print_usage
+      exit 1
+      ;;
+  esac
+done
+
+# Detect container runtime if not specified
+if [[ -z "$CONTAINER_RUNTIME" ]]; then
+  if command -v podman &> /dev/null; then
+    CONTAINER_RUNTIME="podman"
+  elif command -v docker &> /dev/null; then
+    CONTAINER_RUNTIME="docker"
+  else
+    echo "🚨 Neither Podman nor Docker could be found"
+    echo "Install Docker: https://docs.docker.com/get-docker/ or Podman: https://podman.io/getting-started/installation"
+    exit 1
+  fi
 fi
 
 echo "🚀 Setting up telemetry stack for Llama Stack using $CONTAINER_RUNTIME..."
@@ -90,6 +135,8 @@ $CONTAINER_RUNTIME run -d --name grafana \
   -e GF_SECURITY_ADMIN_PASSWORD=admin \
   -e GF_USERS_ALLOW_SIGN_UP=false \
   -v "$SCRIPT_DIR/grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:Z" \
+  -v "$SCRIPT_DIR/grafana-dashboards.yaml:/etc/grafana/provisioning/dashboards/dashboards.yaml:Z" \
+  -v "$SCRIPT_DIR/llama-stack-dashboard.json:/etc/grafana/provisioning/dashboards/llama-stack-dashboard.json:Z" \
   docker.io/grafana/grafana:11.0.0
 
 # Wait for services to start
@@ -111,7 +158,7 @@ echo "   OTEL Collector:   http://localhost:4318 (OTLP endpoint)"
 echo ""
 echo "🔧 Environment variables for Llama Stack:"
 echo "   export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318"
-echo "   export TELEMETRY_SINKS=otel_trace,otel_metric"
+echo "   export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf"
 echo "   export OTEL_SERVICE_NAME=my-llama-app"
 echo ""
 echo "📊 Next steps:"

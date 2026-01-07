@@ -11,7 +11,7 @@ import pytest
 import yaml
 from pydantic import BaseModel, Field, ValidationError
 
-from llama_stack.core.datatypes import Api, Provider, StackRunConfig
+from llama_stack.core.datatypes import Api, Provider, StackConfig
 from llama_stack.core.distribution import INTERNAL_APIS, get_provider_registry, providable_apis
 from llama_stack.core.storage.datatypes import (
     InferenceStoreReference,
@@ -22,7 +22,7 @@ from llama_stack.core.storage.datatypes import (
     SqlStoreReference,
     StorageConfig,
 )
-from llama_stack.providers.datatypes import ProviderSpec
+from llama_stack_api import ProviderSpec
 
 
 class SampleConfig(BaseModel):
@@ -48,11 +48,12 @@ def _default_storage() -> StorageConfig:
             metadata=KVStoreReference(backend="kv_default", namespace="registry"),
             inference=InferenceStoreReference(backend="sql_default", table_name="inference_store"),
             conversations=SqlStoreReference(backend="sql_default", table_name="conversations"),
+            prompts=KVStoreReference(backend="kv_default", namespace="prompts"),
         ),
     )
 
 
-def make_stack_config(**overrides) -> StackRunConfig:
+def make_stack_config(**overrides) -> StackConfig:
     storage = overrides.pop("storage", _default_storage())
     defaults = dict(
         image_name="test_image",
@@ -61,7 +62,7 @@ def make_stack_config(**overrides) -> StackRunConfig:
         storage=storage,
     )
     defaults.update(overrides)
-    return StackRunConfig(**defaults)
+    return StackConfig(**defaults)
 
 
 @pytest.fixture
@@ -196,8 +197,6 @@ class TestProviderRegistry:
             assert internal_api not in apis, f"Internal API {internal_api} should not be in providable_apis"
 
         for api in apis:
-            if api == Api.telemetry:
-                continue
             module_name = f"llama_stack.providers.registry.{api.name.lower()}"
             try:
                 importlib.import_module(module_name)
@@ -271,7 +270,7 @@ class TestProviderRegistry:
             external_providers_dir="/nonexistent/dir",
         )
         with pytest.raises(FileNotFoundError):
-            get_provider_registry(config)
+            get_provider_registry(config=config)
 
     def test_empty_api_directory(self, api_directories, mock_providers, base_config):
         """Test handling of empty API directory."""
@@ -313,7 +312,7 @@ pip_packages:
         """Test loading an external provider from a module (success path)."""
         from types import SimpleNamespace
 
-        from llama_stack.providers.datatypes import Api, ProviderSpec
+        from llama_stack_api import Api, ProviderSpec
 
         # Simulate a provider module with get_provider_spec
         fake_spec = ProviderSpec(
@@ -340,7 +339,7 @@ pip_packages:
                     ]
                 },
             )
-            registry = get_provider_registry(config)
+            registry = get_provider_registry(config=config)
             assert Api.inference in registry
             assert "external_test" in registry[Api.inference]
             provider = registry[Api.inference]["external_test"]
@@ -369,7 +368,7 @@ pip_packages:
                 },
             )
             with pytest.raises(ValueError) as exc_info:
-                get_provider_registry(config)
+                get_provider_registry(config=config)
             assert "get_provider_spec not found" in str(exc_info.value)
 
     def test_external_provider_from_module_missing_get_provider_spec(self, mock_providers):
@@ -392,31 +391,29 @@ pip_packages:
                 },
             )
             with pytest.raises(AttributeError):
-                get_provider_registry(config)
+                get_provider_registry(config=config)
 
-    def test_external_provider_from_module_building(self, mock_providers):
-        """Test loading an external provider from a module during build (building=True, partial spec)."""
-        from llama_stack.core.datatypes import BuildConfig, BuildProvider, DistributionSpec
-        from llama_stack.providers.datatypes import Api
+    def test_external_provider_from_module_listing(self, mock_providers):
+        """Test loading an external provider from a module during list-deps (listing=True, partial spec)."""
+        from llama_stack.core.datatypes import StackConfig
+        from llama_stack_api import Api
 
-        # No importlib patch needed, should not import module when type of `config` is BuildConfig or DistributionSpec
-        build_config = BuildConfig(
-            version=2,
-            image_type="container",
+        # No importlib patch needed, should not import module when listing
+        config = StackConfig(
             image_name="test_image",
-            distribution_spec=DistributionSpec(
-                description="test",
-                providers={
-                    "inference": [
-                        BuildProvider(
-                            provider_type="external_test",
-                            module="external_test",
-                        )
-                    ]
-                },
-            ),
+            apis=[],
+            providers={
+                "inference": [
+                    Provider(
+                        provider_id="external_test",
+                        provider_type="external_test",
+                        config={},
+                        module="external_test",
+                    )
+                ]
+            },
         )
-        registry = get_provider_registry(build_config)
+        registry = get_provider_registry(config=config, listing=True)
         assert Api.inference in registry
         assert "external_test" in registry[Api.inference]
         provider = registry[Api.inference]["external_test"]
@@ -449,7 +446,7 @@ class TestGetExternalProvidersFromModule:
                 },
             )
             registry = {Api.inference: {}}
-            result = get_external_providers_from_module(registry, config, building=False)
+            result = get_external_providers_from_module(registry, config, listing=False)
             # Should not add anything to registry
             assert len(result[Api.inference]) == 0
 
@@ -458,7 +455,7 @@ class TestGetExternalProvidersFromModule:
         from types import SimpleNamespace
 
         from llama_stack.core.distribution import get_external_providers_from_module
-        from llama_stack.providers.datatypes import ProviderSpec
+        from llama_stack_api import ProviderSpec
 
         fake_spec = ProviderSpec(
             api=Api.inference,
@@ -488,36 +485,34 @@ class TestGetExternalProvidersFromModule:
                 },
             )
             registry = {Api.inference: {}}
-            result = get_external_providers_from_module(registry, config, building=False)
+            result = get_external_providers_from_module(registry, config, listing=False)
             assert "versioned_test" in result[Api.inference]
             assert result[Api.inference]["versioned_test"].module == "versioned_test==1.0.0"
 
     def test_buildconfig_does_not_import_module(self, mock_providers):
-        """Test that BuildConfig does not import the module (building=True)."""
-        from llama_stack.core.datatypes import BuildConfig, BuildProvider, DistributionSpec
+        """Test that StackConfig does not import the module when listing (listing=True)."""
+        from llama_stack.core.datatypes import StackConfig
         from llama_stack.core.distribution import get_external_providers_from_module
 
-        build_config = BuildConfig(
-            version=2,
-            image_type="container",
+        config = StackConfig(
             image_name="test_image",
-            distribution_spec=DistributionSpec(
-                description="test",
-                providers={
-                    "inference": [
-                        BuildProvider(
-                            provider_type="build_test",
-                            module="build_test==1.0.0",
-                        )
-                    ]
-                },
-            ),
+            apis=[],
+            providers={
+                "inference": [
+                    Provider(
+                        provider_id="build_test",
+                        provider_type="build_test",
+                        config={},
+                        module="build_test==1.0.0",
+                    )
+                ]
+            },
         )
 
-        # Should not call import_module at all when building
+        # Should not call import_module at all when listing
         with patch("importlib.import_module") as mock_import:
             registry = {Api.inference: {}}
-            result = get_external_providers_from_module(registry, build_config, building=True)
+            result = get_external_providers_from_module(registry, config, listing=True)
 
             # Verify module was NOT imported
             mock_import.assert_not_called()
@@ -531,35 +526,31 @@ class TestGetExternalProvidersFromModule:
             assert provider.api == Api.inference
 
     def test_buildconfig_multiple_providers(self, mock_providers):
-        """Test BuildConfig with multiple providers for the same API."""
-        from llama_stack.core.datatypes import BuildConfig, BuildProvider, DistributionSpec
+        """Test StackConfig with multiple providers for the same API."""
+        from llama_stack.core.datatypes import StackConfig
         from llama_stack.core.distribution import get_external_providers_from_module
 
-        build_config = BuildConfig(
-            version=2,
-            image_type="container",
+        config = StackConfig(
             image_name="test_image",
-            distribution_spec=DistributionSpec(
-                description="test",
-                providers={
-                    "inference": [
-                        BuildProvider(provider_type="provider1", module="provider1"),
-                        BuildProvider(provider_type="provider2", module="provider2"),
-                    ]
-                },
-            ),
+            apis=[],
+            providers={
+                "inference": [
+                    Provider(provider_id="provider1", provider_type="provider1", config={}, module="provider1"),
+                    Provider(provider_id="provider2", provider_type="provider2", config={}, module="provider2"),
+                ]
+            },
         )
 
         with patch("importlib.import_module") as mock_import:
             registry = {Api.inference: {}}
-            result = get_external_providers_from_module(registry, build_config, building=True)
+            result = get_external_providers_from_module(registry, config, listing=True)
 
             mock_import.assert_not_called()
             assert "provider1" in result[Api.inference]
             assert "provider2" in result[Api.inference]
 
     def test_distributionspec_does_not_import_module(self, mock_providers):
-        """Test that DistributionSpec does not import the module (building=True)."""
+        """Test that DistributionSpec does not import the module (listing=True)."""
         from llama_stack.core.datatypes import BuildProvider, DistributionSpec
         from llama_stack.core.distribution import get_external_providers_from_module
 
@@ -575,10 +566,10 @@ class TestGetExternalProvidersFromModule:
             },
         )
 
-        # Should not call import_module at all when building
+        # Should not call import_module at all when listing
         with patch("importlib.import_module") as mock_import:
             registry = {Api.inference: {}}
-            result = get_external_providers_from_module(registry, dist_spec, building=True)
+            result = get_external_providers_from_module(registry, dist_spec, listing=True)
 
             # Verify module was NOT imported
             mock_import.assert_not_called()
@@ -595,7 +586,7 @@ class TestGetExternalProvidersFromModule:
         from types import SimpleNamespace
 
         from llama_stack.core.distribution import get_external_providers_from_module
-        from llama_stack.providers.datatypes import ProviderSpec
+        from llama_stack_api import ProviderSpec
 
         spec1 = ProviderSpec(
             api=Api.inference,
@@ -632,7 +623,7 @@ class TestGetExternalProvidersFromModule:
                 },
             )
             registry = {Api.inference: {}}
-            result = get_external_providers_from_module(registry, config, building=False)
+            result = get_external_providers_from_module(registry, config, listing=False)
 
             # Only the matching provider_type should be added
             assert "list_test" in result[Api.inference]
@@ -643,7 +634,7 @@ class TestGetExternalProvidersFromModule:
         from types import SimpleNamespace
 
         from llama_stack.core.distribution import get_external_providers_from_module
-        from llama_stack.providers.datatypes import ProviderSpec
+        from llama_stack_api import ProviderSpec
 
         spec1 = ProviderSpec(
             api=Api.inference,
@@ -680,7 +671,7 @@ class TestGetExternalProvidersFromModule:
                 },
             )
             registry = {Api.inference: {}}
-            result = get_external_providers_from_module(registry, config, building=False)
+            result = get_external_providers_from_module(registry, config, listing=False)
 
             # Only the matching provider_type should be added
             assert "wanted" in result[Api.inference]
@@ -691,7 +682,7 @@ class TestGetExternalProvidersFromModule:
         from types import SimpleNamespace
 
         from llama_stack.core.distribution import get_external_providers_from_module
-        from llama_stack.providers.datatypes import ProviderSpec
+        from llama_stack_api import ProviderSpec
 
         # Module returns both inline and remote variants
         spec1 = ProviderSpec(
@@ -735,7 +726,7 @@ class TestGetExternalProvidersFromModule:
                 },
             )
             registry = {Api.inference: {}}
-            result = get_external_providers_from_module(registry, config, building=False)
+            result = get_external_providers_from_module(registry, config, listing=False)
 
             # Both provider types should be added to registry
             assert "remote::ollama" in result[Api.inference]
@@ -769,7 +760,7 @@ class TestGetExternalProvidersFromModule:
             registry = {Api.inference: {}}
 
             with pytest.raises(ValueError) as exc_info:
-                get_external_providers_from_module(registry, config, building=False)
+                get_external_providers_from_module(registry, config, listing=False)
 
             assert "get_provider_spec not found" in str(exc_info.value)
 
@@ -806,7 +797,7 @@ class TestGetExternalProvidersFromModule:
             registry = {Api.inference: {}}
 
             with pytest.raises(RuntimeError) as exc_info:
-                get_external_providers_from_module(registry, config, building=False)
+                get_external_providers_from_module(registry, config, listing=False)
 
             assert "Something went wrong" in str(exc_info.value)
 
@@ -819,7 +810,7 @@ class TestGetExternalProvidersFromModule:
             providers={},
         )
         registry = {Api.inference: {}}
-        result = get_external_providers_from_module(registry, config, building=False)
+        result = get_external_providers_from_module(registry, config, listing=False)
 
         # Should return registry unchanged
         assert result == registry
@@ -830,7 +821,7 @@ class TestGetExternalProvidersFromModule:
         from types import SimpleNamespace
 
         from llama_stack.core.distribution import get_external_providers_from_module
-        from llama_stack.providers.datatypes import ProviderSpec
+        from llama_stack_api import ProviderSpec
 
         inference_spec = ProviderSpec(
             api=Api.inference,
@@ -875,7 +866,7 @@ class TestGetExternalProvidersFromModule:
                 },
             )
             registry = {Api.inference: {}, Api.safety: {}}
-            result = get_external_providers_from_module(registry, config, building=False)
+            result = get_external_providers_from_module(registry, config, listing=False)
 
             assert "inf_test" in result[Api.inference]
             assert "safe_test" in result[Api.safety]

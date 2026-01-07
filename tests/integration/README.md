@@ -25,7 +25,7 @@ Here are the most important options:
   - **`server:<config>`** - automatically start a server with the given config (e.g., `server:starter`). This provides one-step testing by auto-starting the server if the port is available, or reusing an existing server if already running.
   - **`server:<config>:<port>`** - same as above but with a custom port (e.g., `server:starter:8322`)
   - a URL which points to a Llama Stack distribution server
-  - a distribution name (e.g., `starter`) or a path to a `run.yaml` file
+  - a distribution name (e.g., `starter`) or a path to a `config.yaml` file
   - a comma-separated list of api=provider pairs, e.g. `inference=ollama,safety=llama-guard,agents=meta-reference`. This is most useful for testing a single API surface.
 - `--env`: set environment variables, e.g. --env KEY=value. this is a utility option to set environment variables required by various providers.
 
@@ -211,3 +211,23 @@ def test_asymmetric_embeddings(llama_stack_client, embedding_model_id):
 
     assert query_response.embeddings is not None
 ```
+
+## TypeScript Client Replays
+
+TypeScript SDK tests can run alongside Python tests when testing against `server:<config>` stacks. Set `TS_CLIENT_PATH` to the path or version of `llama-stack-client-typescript` to enable:
+
+```bash
+# Use published npm package (responses suite)
+TS_CLIENT_PATH=^0.3.2 scripts/integration-tests.sh --stack-config server:ci-tests --suite responses --setup gpt
+
+# Use local checkout from ~/.cache (recommended for development)
+git clone https://github.com/llamastack/llama-stack-client-typescript.git ~/.cache/llama-stack-client-typescript
+TS_CLIENT_PATH=~/.cache/llama-stack-client-typescript scripts/integration-tests.sh --stack-config server:ci-tests --suite responses --setup gpt
+
+# Run base suite with TypeScript tests
+TS_CLIENT_PATH=~/.cache/llama-stack-client-typescript scripts/integration-tests.sh --stack-config server:ci-tests --suite base --setup ollama
+```
+
+TypeScript tests run immediately after Python tests pass, using the same replay fixtures. The mapping between Python suites/setups and TypeScript test files is defined in `tests/integration/client-typescript/suites.json`.
+
+If `TS_CLIENT_PATH` is unset, TypeScript tests are skipped entirely.

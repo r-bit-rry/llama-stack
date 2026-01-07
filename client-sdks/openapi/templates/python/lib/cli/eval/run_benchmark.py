@@ -180,7 +180,7 @@ def run_benchmark(
                     assert len(res) > 0 and "score" in res[0]
                     if aggregation_function == "categorical_count":
                         scores = [str(r["score"]) for r in res]
-                        unique_scores = sorted(list(set(scores)))
+                        unique_scores = sorted(set(scores))
                         counts = [scores.count(s) for s in unique_scores]
                         create_bar_chart(
                             counts,

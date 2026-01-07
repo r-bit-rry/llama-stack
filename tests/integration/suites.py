@@ -50,7 +50,7 @@ SETUP_DEFINITIONS: dict[str, Setup] = {
         name="ollama",
         description="Local Ollama provider with text + safety models",
         env={
-            "OLLAMA_URL": "http://0.0.0.0:11434",
+            "OLLAMA_URL": "http://0.0.0.0:11434/v1",
             "SAFETY_MODEL": "ollama/llama-guard3:1b",
         },
         defaults={
@@ -64,7 +64,7 @@ SETUP_DEFINITIONS: dict[str, Setup] = {
         name="ollama",
         description="Local Ollama provider with a vision model",
         env={
-            "OLLAMA_URL": "http://0.0.0.0:11434",
+            "OLLAMA_URL": "http://0.0.0.0:11434/v1",
         },
         defaults={
             "vision_model": "ollama/llama3.2-vision:11b",
@@ -75,7 +75,7 @@ SETUP_DEFINITIONS: dict[str, Setup] = {
         name="ollama-postgres",
         description="Server-mode tests with Postgres-backed persistence",
         env={
-            "OLLAMA_URL": "http://0.0.0.0:11434",
+            "OLLAMA_URL": "http://0.0.0.0:11434/v1",
             "SAFETY_MODEL": "ollama/llama-guard3:1b",
             "POSTGRES_HOST": "127.0.0.1",
             "POSTGRES_PORT": "5432",
@@ -98,7 +98,7 @@ SETUP_DEFINITIONS: dict[str, Setup] = {
             "VLLM_URL": "http://localhost:8000/v1",
         },
         defaults={
-            "text_model": "vllm/meta-llama/Llama-3.2-1B-Instruct",
+            "text_model": "vllm/Qwen/Qwen3-0.6B",
             "embedding_model": "sentence-transformers/nomic-embed-text-v1.5",
         },
     ),
@@ -188,6 +188,11 @@ SUITE_DEFINITIONS: dict[str, Suite] = {
         name="base",
         roots=base_roots,
         default_setup="ollama",
+    ),
+    "base-vllm-subset": Suite(
+        name="base-vllm-subset",
+        roots=["tests/integration/inference"],
+        default_setup="vllm",
     ),
     "responses": Suite(
         name="responses",

@@ -12,22 +12,19 @@ from openai.types.conversations.conversation import Conversation as OpenAIConver
 from openai.types.conversations.conversation_item import ConversationItem as OpenAIConversationItem
 from pydantic import TypeAdapter
 
-from llama_stack.apis.agents.openai_responses import (
-    OpenAIResponseInputMessageContentText,
-    OpenAIResponseMessage,
-)
 from llama_stack.core.conversations.conversations import (
     ConversationServiceConfig,
     ConversationServiceImpl,
 )
-from llama_stack.core.datatypes import StackRunConfig
+from llama_stack.core.datatypes import StackConfig
 from llama_stack.core.storage.datatypes import (
     ServerStoresConfig,
     SqliteSqlStoreConfig,
     SqlStoreReference,
     StorageConfig,
 )
-from llama_stack.providers.utils.sqlstore.sqlstore import register_sqlstore_backends
+from llama_stack.core.storage.sqlstore.sqlstore import register_sqlstore_backends
+from llama_stack_api import OpenAIResponseInputMessageContentText, OpenAIResponseMessage
 
 
 @pytest.fixture
@@ -41,12 +38,15 @@ async def service():
             },
             stores=ServerStoresConfig(
                 conversations=SqlStoreReference(backend="sql_test", table_name="openai_conversations"),
+                metadata=None,
+                inference=None,
+                prompts=None,
             ),
         )
         register_sqlstore_backends({"sql_test": storage.backends["sql_test"]})
-        run_config = StackRunConfig(image_name="test", apis=[], providers={}, storage=storage)
+        stack_config = StackConfig(image_name="test", apis=[], providers={}, storage=storage)
 
-        config = ConversationServiceConfig(run_config=run_config, policy=[])
+        config = ConversationServiceConfig(config=stack_config, policy=[])
         service = ConversationServiceImpl(config, {})
         await service.initialize()
         yield service
@@ -82,7 +82,7 @@ async def test_conversation_items(service):
     assert len(item_list.data) == 1
     assert item_list.data[0].id == "msg_test123"
 
-    items = await service.list(conversation.id)
+    items = await service.list_items(conversation.id)
     assert len(items.data) == 1
 
 
@@ -120,7 +120,7 @@ async def test_openai_type_compatibility(service):
         assert hasattr(item_list, attr)
     assert item_list.object == "list"
 
-    items = await service.list(conversation.id)
+    items = await service.list_items(conversation.id)
     item = await service.retrieve(conversation.id, items.data[0].id)
     item_dict = item.model_dump()
 
@@ -145,12 +145,15 @@ async def test_policy_configuration():
             },
             stores=ServerStoresConfig(
                 conversations=SqlStoreReference(backend="sql_test", table_name="openai_conversations"),
+                metadata=None,
+                inference=None,
+                prompts=None,
             ),
         )
         register_sqlstore_backends({"sql_test": storage.backends["sql_test"]})
-        run_config = StackRunConfig(image_name="test", apis=[], providers={}, storage=storage)
+        stack_config = StackConfig(image_name="test", apis=[], providers={}, storage=storage)
 
-        config = ConversationServiceConfig(run_config=run_config, policy=restrictive_policy)
+        config = ConversationServiceConfig(config=stack_config, policy=restrictive_policy)
         service = ConversationServiceImpl(config, {})
         await service.initialize()
 

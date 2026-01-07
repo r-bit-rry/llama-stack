@@ -3,7 +3,7 @@
 #
 # This source code is licensed under the terms described in the LICENSE file in
 # the root directory of this source tree.
-import logging
+import logging  # allow-direct-logging
 from collections.abc import Callable, Mapping
 from typing import Any
 

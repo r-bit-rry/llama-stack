@@ -43,19 +43,18 @@ class TestConversationResponses:
             conversation=conversation.id,
         )
 
-        # Second turn with streaming
-        response_stream = openai_client.responses.create(
+        # Second turn with streaming - use context manager to ensure proper connection cleanup
+        with openai_client.responses.create(
             model=text_model_id,
             input=[{"role": "user", "content": "Say goodbye"}],
             conversation=conversation.id,
             stream=True,
-        )
-
-        final_response = None
-        for chunk in response_stream:
-            if chunk.type == "response.completed":
-                final_response = chunk.response
-                break
+        ) as response_stream:
+            final_response = None
+            for chunk in response_stream:
+                if chunk.type == "response.completed":
+                    final_response = chunk.response
+                    break
 
         assert response1.id != final_response.id
         assert len(response1.output_text.strip()) > 0
@@ -65,6 +64,7 @@ class TestConversationResponses:
         conversation_items = openai_client.conversations.items.list(conversation.id)
         assert len(conversation_items.data) >= 4  # 2 user + 2 assistant messages
 
+    @pytest.mark.timeout(60, method="thread")
     def test_conversation_context_loading(self, openai_client, text_model_id):
         """Test that conversation context is properly loaded for responses."""
         conversation = openai_client.conversations.create(
@@ -82,6 +82,7 @@ class TestConversationResponses:
 
         assert "apple" in response.output_text.lower()
 
+    @pytest.mark.timeout(60, method="thread")
     def test_conversation_error_handling(self, openai_client, text_model_id):
         """Test error handling for invalid and nonexistent conversations."""
         # Invalid conversation ID format
@@ -125,18 +126,18 @@ class TestConversationResponses:
         assert len(response.output_text.strip()) > 0
 
     # this is not ready yet
-    # def test_conversation_compat_client(self, compat_client, text_model_id):
+    # def test_conversation_compat_client(self, responses_client, text_model_id):
     #     """Test conversation parameter works with compatibility client."""
-    #     if not hasattr(compat_client, "conversations"):
-    #         pytest.skip("compat_client does not support conversations API")
+    #     if not hasattr(responses_client, "conversations"):
+    #         pytest.skip("responses_client does not support conversations API")
     #
-    #     conversation = compat_client.conversations.create()
-    #     response = compat_client.responses.create(
+    #     conversation = responses_client.conversations.create()
+    #     response = responses_client.responses.create(
     #         model=text_model_id, input="Tell me a joke", conversation=conversation.id
     #     )
     #
     #     assert response is not None
     #     assert len(response.output_text.strip()) > 0
     #
-    #     conversation_items = compat_client.conversations.items.list(conversation.id)
+    #     conversation_items = responses_client.conversations.items.list(conversation.id)
     #     assert len(conversation_items.data) >= 2

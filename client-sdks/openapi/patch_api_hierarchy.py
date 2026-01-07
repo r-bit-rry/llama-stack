@@ -98,10 +98,9 @@ def patch_api_file(api_file: Path, child_tag: str, package_name: str) -> bool:
 
     # Check if already patched
     import_line = f"from {package_name}.api.{child_module} import {child_class}\n"
-    property_pattern = f"self.{child_snake}:"
 
     if any(import_line.strip() in line for line in lines):
-        print(f"  ℹ Already patched: {child_snake}")
+        print(f"  [i] Already patched: {child_snake}")
         return False
 
     # Find class definition line
@@ -223,7 +222,7 @@ def patch_llama_stack_client(client_file: Path, pairs: list[tuple[str, str]]) ->
         child_snake = to_snake_case(first_pair[1])
         test_line = f"self.{parent_snake}.{child_snake} = self.{child_snake}"
         if any(test_line in line for line in lines):
-            print("  ℹ LlamaStackClient already patched")
+            print("  [i] LlamaStackClient already patched")
             return False
 
     # Get indentation from the comment line itself (count whitespace before '#')

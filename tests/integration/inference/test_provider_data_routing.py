@@ -16,19 +16,14 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from llama_stack import LlamaStackAsLibraryClient
-from llama_stack.apis.datatypes import Api
-from llama_stack.apis.inference.inference import (
+from llama_stack.core.library_client import LlamaStackAsLibraryClient
+from llama_stack_api import (
+    Api,
     OpenAIAssistantMessageParam,
     OpenAIChatCompletion,
     OpenAIChatCompletionUsage,
     OpenAIChoice,
 )
-from llama_stack.apis.telemetry.telemetry import MetricEvent
-
-
-class OpenAIChatCompletionWithMetrics(OpenAIChatCompletion):
-    metrics: list[MetricEvent] | None = None
 
 
 def test_unregistered_model_routing_with_provider_data(client_with_models):
@@ -56,7 +51,7 @@ def test_unregistered_model_routing_with_provider_data(client_with_models):
     test_model_id = "anthropic/claude-3-5-sonnet-20241022"
 
     # First, verify the model is NOT registered
-    registered_models = {m.identifier for m in client.models.list()}
+    registered_models = {m.id for m in client.models.list()}
     assert test_model_id not in registered_models, f"Model {test_model_id} should not be pre-registered for this test"
 
     # Check if anthropic provider is available in ci-tests
@@ -72,7 +67,7 @@ def test_unregistered_model_routing_with_provider_data(client_with_models):
     # The inference router's routing_table.impls_by_provider_id should have anthropic
     # Let's patch the anthropic provider's openai_chat_completion method
     # to avoid making real API calls
-    mock_response = OpenAIChatCompletionWithMetrics(
+    mock_response = OpenAIChatCompletion(
         id="chatcmpl-test-123",
         created=1234567890,
         model="claude-3-5-sonnet-20241022",

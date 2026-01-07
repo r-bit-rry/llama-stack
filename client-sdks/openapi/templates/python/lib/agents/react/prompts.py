@@ -25,11 +25,11 @@ The `action` key should specify the $TOOL_NAME the name of the tool to use and t
 Make sure to have the $TOOL_PARAMS as a list of dictionaries in the right format for the tool you are using, and do not put variable names as input if you can find the right values.
 
 You should always think about one action to take, and have the `thought` key contain your thought process about this action.
-If the tool responds, the tool will return an observation containing result of the action. 
+If the tool responds, the tool will return an observation containing result of the action.
 ... (this Thought/Action/Observation can repeat N times, you should take several steps when needed. The action key must only use a SINGLE tool at a time.)
 
 You can use the result of the previous action as input for the next action.
-The observation will always be the response from calling the tool: it can represent a file, like "image_1.jpg". You do not need to generate them, it will be provided to you. 
+The observation will always be the response from calling the tool: it can represent a file, like "image_1.jpg". You do not need to generate them, it will be provided to you.
 Then you can use it as input for the next action. You can do it for instance as follows:
 
 Observation: "image_1.jpg"
@@ -141,7 +141,7 @@ Above example were using notional tools that might not exist for you. You only h
 <<tool_descriptions>>
 
 Here are the rules you should always follow to solve your task:
-1. ALWAYS answer in the JSON format with keys "thought", "action", "answer", else you will fail. 
+1. ALWAYS answer in the JSON format with keys "thought", "action", "answer", else you will fail.
 2. Always use the right arguments for the tools. Never use variable names in the 'tool_params' field, use the value instead.
 3. Call a tool only when needed: do not call the search agent if you do not need information, try to solve the task yourself.
 4. Never re-do a tool call that you previously did with the exact same parameters.

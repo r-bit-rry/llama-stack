@@ -1,13 +1,23 @@
 # syntax=docker/dockerfile:1.6
 #
 # This Dockerfile is used to build the Llama Stack container image.
-# Example:
+# Supports multi-architecture builds: linux/amd64, linux/arm64, and more
+#
+# Single-architecture build example:
 # docker build \
 #   -f containers/Containerfile \
 #   --build-arg DISTRO_NAME=starter \
 #   --tag llama-stack:starter .
+#
+# Multi-arch build and push example (creates a container index / manifest list):
+# docker buildx build --platform linux/amd64,linux/arm64 \
+#   --push \
+#   -f containers/Containerfile \
+#   --build-arg DISTRO_NAME=starter \
+#   --tag docker.io/llamastack/distribution-starter:latest .
 
 ARG BASE_IMAGE=python:3.12-slim
+# Buildx automatically handles platform selection for the base image when --platform is specified
 FROM ${BASE_IMAGE}
 
 ARG INSTALL_MODE="pypi"
@@ -47,7 +57,7 @@ RUN set -eux; \
         exit 1; \
     fi
 
-RUN pip install --no-cache-dir uv
+RUN pip install --no-cache uv
 ENV UV_SYSTEM_PYTHON=1
 
 ENV INSTALL_MODE=${INSTALL_MODE}
@@ -72,7 +82,7 @@ RUN set -eux; \
             echo "LLAMA_STACK_CLIENT_DIR is set but $LLAMA_STACK_CLIENT_DIR does not exist" >&2; \
             exit 1; \
         fi; \
-        uv pip install --no-cache-dir -e "$LLAMA_STACK_CLIENT_DIR"; \
+        uv pip install --no-cache -e "$LLAMA_STACK_CLIENT_DIR"; \
     fi;
 
 # Install llama-stack
@@ -88,22 +98,22 @@ RUN set -eux; \
         fi; \
         if [ -n "$SAVED_UV_EXTRA_INDEX_URL" ] && [ -n "$SAVED_UV_INDEX_STRATEGY" ]; then \
             UV_EXTRA_INDEX_URL="$SAVED_UV_EXTRA_INDEX_URL" UV_INDEX_STRATEGY="$SAVED_UV_INDEX_STRATEGY" \
-                uv pip install --no-cache-dir -e "$LLAMA_STACK_DIR"; \
+                uv pip install --no-cache -e "$LLAMA_STACK_DIR"; \
         else \
-            uv pip install --no-cache-dir -e "$LLAMA_STACK_DIR"; \
+            uv pip install --no-cache -e "$LLAMA_STACK_DIR"; \
         fi; \
     elif [ "$INSTALL_MODE" = "test-pypi" ]; then \
-        uv pip install --no-cache-dir fastapi libcst; \
+        uv pip install --no-cache fastapi libcst; \
         if [ -n "$TEST_PYPI_VERSION" ]; then \
-            uv pip install --no-cache-dir --extra-index-url https://test.pypi.org/simple/ --index-strategy unsafe-best-match "llama-stack==$TEST_PYPI_VERSION"; \
+            uv pip install --no-cache --extra-index-url https://test.pypi.org/simple/ --index-strategy unsafe-best-match "llama-stack==$TEST_PYPI_VERSION"; \
         else \
-            uv pip install --no-cache-dir --extra-index-url https://test.pypi.org/simple/ --index-strategy unsafe-best-match llama-stack; \
+            uv pip install --no-cache --extra-index-url https://test.pypi.org/simple/ --index-strategy unsafe-best-match llama-stack; \
         fi; \
     else \
         if [ -n "$PYPI_VERSION" ]; then \
-            uv pip install --no-cache-dir "llama-stack==$PYPI_VERSION"; \
+            uv pip install --no-cache "llama-stack==$PYPI_VERSION"; \
         else \
-            uv pip install --no-cache-dir llama-stack; \
+            uv pip install --no-cache llama-stack; \
         fi; \
     fi;
 
@@ -117,8 +127,13 @@ RUN set -eux; \
     fi; \
     deps="$(llama stack list-deps "$DISTRO_NAME")"; \
     if [ -n "$deps" ]; then \
-        printf '%s\n' "$deps" | xargs -L1 uv pip install --no-cache-dir; \
+        printf '%s\n' "$deps" | xargs -L1 uv pip install --no-cache; \
     fi
+
+# Install OpenTelemetry auto-instrumentation support
+RUN set -eux; \
+    pip install --no-cache opentelemetry-distro opentelemetry-exporter-otlp; \
+    opentelemetry-bootstrap -a install
 
 # Cleanup
 RUN set -eux; \
@@ -135,15 +150,21 @@ RUN cat <<'EOF' >/usr/local/bin/llama-stack-entrypoint.sh
 #!/bin/sh
 set -e
 
+# Enable OpenTelemetry auto-instrumentation if any OTEL_* variable is set
+CMD_PREFIX=""
+if env | grep -q '^OTEL_'; then
+  CMD_PREFIX="opentelemetry-instrument"
+fi
+
 if [ -n "$RUN_CONFIG_PATH" ] && [ -f "$RUN_CONFIG_PATH" ]; then
-  exec llama stack run "$RUN_CONFIG_PATH" "$@"
+  exec $CMD_PREFIX llama stack run "$RUN_CONFIG_PATH" "$@"
 fi
 
 if [ -n "$DISTRO_NAME" ]; then
-  exec llama stack run "$DISTRO_NAME" "$@"
+  exec $CMD_PREFIX llama stack run "$DISTRO_NAME" "$@"
 fi
 
-exec llama stack run "$@"
+exec $CMD_PREFIX llama stack run "$@"
 EOF
 RUN chmod +x /usr/local/bin/llama-stack-entrypoint.sh
 

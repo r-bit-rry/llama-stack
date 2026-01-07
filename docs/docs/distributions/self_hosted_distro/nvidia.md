@@ -127,12 +127,38 @@ docker run \
   -it \
   --pull always \
   -p $LLAMA_STACK_PORT:$LLAMA_STACK_PORT \
-  -v ./run.yaml:/root/my-run.yaml \
+  -v ~/.llama:/root/.llama \
   -e NVIDIA_API_KEY=$NVIDIA_API_KEY \
   llamastack/distribution-nvidia \
-  --config /root/my-run.yaml \
   --port $LLAMA_STACK_PORT
 ```
+
+### Via Docker with Custom Run Configuration
+
+You can also run the Docker container with a custom run configuration file by mounting it into the container:
+
+```bash
+# Set the path to your custom config.yaml file
+CUSTOM_RUN_CONFIG=/path/to/your/custom-config.yaml
+LLAMA_STACK_PORT=8321
+
+docker run \
+  -it \
+  --pull always \
+  -p $LLAMA_STACK_PORT:$LLAMA_STACK_PORT \
+  -v ~/.llama:/root/.llama \
+  -v $CUSTOM_RUN_CONFIG:/app/custom-config.yaml \
+  -e RUN_CONFIG_PATH=/app/custom-config.yaml \
+  -e NVIDIA_API_KEY=$NVIDIA_API_KEY \
+  llamastack/distribution-nvidia \
+  --port $LLAMA_STACK_PORT
+```
+
+**Note**: The run configuration must be mounted into the container before it can be used. The `-v` flag mounts your local file into the container, and the `RUN_CONFIG_PATH` environment variable tells the entrypoint script which configuration to use.
+
+Available run configurations for this distribution:
+- `config.yaml`
+- `run-with-safety.yaml`
 
 ### Via venv
 
@@ -143,7 +169,7 @@ INFERENCE_MODEL=meta-llama/Llama-3.1-8B-Instruct
 llama stack list-deps nvidia | xargs -L1 uv pip install
 NVIDIA_API_KEY=$NVIDIA_API_KEY \
 INFERENCE_MODEL=$INFERENCE_MODEL \
-llama stack run ./run.yaml \
+llama stack run ./config.yaml \
   --port 8321
 ```
 

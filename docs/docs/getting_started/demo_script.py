@@ -4,65 +4,107 @@
 # This source code is licensed under the terms described in the LICENSE file in
 # the root directory of this source tree.
 
-from llama_stack_client import Agent, AgentEventLogger, RAGDocument, LlamaStackClient
+"""
+Demo script showing RAG with both Responses API and Chat Completions API.
 
-vector_db_id = "my_demo_vector_db"
-client = LlamaStackClient(base_url="http://localhost:8321")
+This example demonstrates two approaches to RAG with Llama Stack:
+1. Responses API - Automatic agentic tool calling with file search
+2. Chat Completions API - Manual retrieval with explicit control
 
-models = client.models.list()
+Run this script after starting a Llama Stack server:
+    llama stack run starter
+"""
 
-# Select the first LLM and first embedding models
-model_id = next(m for m in models if m.model_type == "llm").identifier
-embedding_model_id = (
-    em := next(m for m in models if m.model_type == "embedding")
-).identifier
-embedding_dimension = em.metadata["embedding_dimension"]
+import io
+import os
 
-vector_db = client.vector_dbs.register(
-    vector_db_id=vector_db_id,
-    embedding_model=embedding_model_id,
-    embedding_dimension=embedding_dimension,
-    provider_id="faiss",
+import requests
+from openai import OpenAI
+
+# Initialize OpenAI client pointing to Llama Stack server
+client = OpenAI(base_url="http://localhost:8321/v1/", api_key="none")
+
+print("RAG demonstration\n")
+
+url = "https://www.paulgraham.com/greatwork.html"
+print(f"Fetching document from: {url}")
+
+vs = client.vector_stores.create()
+
+response = requests.get(url)
+pseudo_file = io.BytesIO(str(response.content).encode("utf-8"))
+uploaded_file = client.files.create(
+    file=(url, pseudo_file, "text/html"), purpose="assistants"
 )
-vector_db_id = vector_db.identifier
-source = "https://www.paulgraham.com/greatwork.html"
-print("rag_tool> Ingesting document:", source)
-document = RAGDocument(
-    document_id="document_1",
-    content=source,
-    mime_type="text/html",
-    metadata={},
+client.vector_stores.files.create(vector_store_id=vs.id, file_id=uploaded_file.id)
+print(f"File uploaded and added to vector store: {uploaded_file.id}")
+
+query = "How do you do great work?"
+print(f"Query: {query}\n")
+
+print(
+    """
+RAG using Responses API:
+   - Automatic tool calling (model decides when to search)
+   - Simpler code, less control
+   - Best for: Conversational agents, automatic workflows
+
+"""
 )
-client.tool_runtime.rag_tool.insert(
-    documents=[document],
-    vector_db_id=vector_db_id,
-    chunk_size_in_tokens=100,
+
+print("Reply via Responses API:\n")
+resp = client.responses.create(
+    model=os.getenv("INFERENCE_MODEL", "ollama/llama3.2:3b"),
+    input=query,
+    tools=[{"type": "file_search", "vector_store_ids": [vs.id]}],
+    include=["file_search_call.results"],
 )
-agent = Agent(
-    client,
-    model=model_id,
-    instructions="You are a helpful assistant",
-    tools=[
+
+print("-" * 80)
+print(resp.output[-1].content[-1].text)
+print("-" * 80)
+
+print(
+    """
+
+RAG using Chat Completions API:
+   - Manual retrieval (you control the search)
+   - More code, more control
+   - Best for: Custom RAG patterns, batch processing, specialized workflows
+"""
+)
+
+print("Searching vector store...")
+search_results = client.vector_stores.search(
+    vector_store_id=vs.id, query=query, max_num_results=3, rewrite_query=False
+)
+
+# Extract context from search results
+context_chunks = []
+for result in search_results.data:
+    # result.content is a list of Content objects, extract the text from each
+    for content_item in result.content:
+        context_chunks.append(content_item.text)
+
+context = "\n\n".join(context_chunks)
+print(f"Found {len(context_chunks)} relevant chunks\n")
+
+print("Reply via Chat Completions API:\n")
+completion = client.chat.completions.create(
+    model=os.getenv("INFERENCE_MODEL", "ollama/llama3.2:3b"),
+    messages=[
         {
-            "name": "builtin::rag/knowledge_search",
-            "args": {"vector_db_ids": [vector_db_id]},
-        }
+            "role": "system",
+            "content": "You are a helpful assistant. Use the provided context to answer the user's question.",
+        },
+        {
+            "role": "user",
+            "content": f"Context:\n{context}\n\nQuestion: {query}\n\nPlease provide a comprehensive answer based on the context above.",
+        },
     ],
+    temperature=0.7,
 )
 
-prompt = "How do you do great work?"
-print("prompt>", prompt)
-
-use_stream = True
-response = agent.create_turn(
-    messages=[{"role": "user", "content": prompt}],
-    session_id=agent.create_session("rag_session"),
-    stream=use_stream,
-)
-
-# Only call `AgentEventLogger().log(response)` for streaming responses.
-if use_stream:
-    for log in AgentEventLogger().log(response):
-        log.print()
-else:
-    print(response)
+print("-" * 80)
+print(completion.choices[0].message.content)
+print("-" * 80)

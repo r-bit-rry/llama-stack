@@ -168,7 +168,7 @@ def _python_type_to_json_schema_type(type_hint: Any) -> str:
     return type_mapping.get(type_name, "string")  # Default to string if unknown
 
 
-def client_tool(func: T) -> ClientTool:
+def client_tool[T: Callable](func: T) -> ClientTool:
     """
     Decorator to convert a function into a ClientTool.
     Usage:
